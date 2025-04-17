@@ -10,3 +10,7 @@ wheels/
 .venv
 
 **/.DS_Store
+
+# TTS model and voice binaries
+kokoro-v1.0.onnx
+voices-v1.0.bin
