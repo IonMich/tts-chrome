@@ -8,16 +8,23 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "readText" && info.selectionText) {
-    // Get stored voice and send it along with selection
-    chrome.storage.sync.get(["voice"], ({ voice }) => {
-      const v = voice || 'af_sarah';
-      chrome.tabs.sendMessage(tab.id, { action: "readText", text: info.selectionText, voice: v }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.error("Error sending message to content script:", chrome.runtime.lastError.message);
-        } else {
-          console.log("Message sent successfully:", response);
-        }
-      });
+    // Send TTS message to the active tab (ignore passed-in tab in Chrome PDF viewer)
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const targetTab = tabs[0];
+      if (targetTab && typeof targetTab.id === 'number') {
+        chrome.storage.sync.get(["voice"], ({ voice }) => {
+          const v = voice || 'af_sarah';
+          chrome.tabs.sendMessage(targetTab.id, { action: "readText", text: info.selectionText, voice: v }, (response) => {
+            if (chrome.runtime.lastError) {
+              console.error("Error sending message to content script:", chrome.runtime.lastError.message);
+            } else {
+              console.log("Message sent successfully:", response);
+            }
+          });
+        });
+      } else {
+        console.error("No active tab to send TTS message to");
+      }
     });
   }
 });

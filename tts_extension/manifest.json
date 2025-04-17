@@ -8,6 +8,9 @@
     "contextMenus",
     "storage"
   ],
+  "host_permissions": [
+    "*://*/*pdf*"
+  ],
   "description": "A simple text-to-speech extension for Chrome.",
   "icons": {
     "16": "icons/icons8-speech-to-text-16.png",
@@ -28,8 +31,23 @@
     }
   ],
   "content_scripts": [
-  {
+    {
       "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "type": "module",
+      "run_at": "document_end"
+    },
+    {
+      "document_selector": [
+        {
+          "url": {
+            "schemes": ["http", "https"],
+            "host": ["*"],
+            "path_contains": "pdf"
+          }
+        }
+      ],
+      "matches": ["*://*/*pdf*"],
       "js": ["content.js"],
       "type": "module",
       "run_at": "document_end"
