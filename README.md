@@ -4,7 +4,7 @@ A high‑quality, low‑latency Text‑to‑Speech Chrome extension (Manifest v3
 
 ## Features
 
-- High‑quality audio using Kokoro‑ONNX model
+- High‑quality audio using the [Kokoro‑ONNX model](https://github.com/thewh1teagle/kokoro-onnx)
 - Low‑latency streaming playback via WebSockets
 - 9 built‑in voices (includes one relaxation/sleep mode)
 - Support for dozens more voices via `voices.json` or `voices.bin`
