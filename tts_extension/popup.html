@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- Set viewport to a fixed width -->
+  <meta name="viewport" content="initial-scale=1.0">
+  <title>Text-to-Speech</title>
+  <!-- Precompiled Tailwind CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <!-- DaisyUI CSS via CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@2.51.5/dist/full.css" rel="stylesheet">
+  <!-- Font Awesome for icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+</head>
+<body class="p-4 bg-base-200" style="min-width: 300px;">
+  <div class="card shadow-xl bg-base-100 p-4">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="card-title text-xl">TTS Converter</h2>
+      <button id="clearBtn" class="btn btn-sm btn-secondary">
+        <i class="fas fa-eraser"></i>
+      </button>
+    </div>
+    <div class="mb-4">
+      <label for="voiceSelect" class="block mb-1 text-sm font-medium">Voice</label>
+      <select id="voiceSelect" class="select select-bordered w-full mb-4">
+        <optgroup label="US Female">
+          <option value="af_sarah">Sarah (Default)</option>
+          <option value="af_alloy">Alloy</option>
+          <option value="af_nicole">Nicole (Relaxation/Sleep)</option>
+        </optgroup>
+        <optgroup label="US Male">
+          <option value="am_adam">Adam</option>
+          <option value="am_michael">Michael</option>
+          <option value="am_onyx">Onyx</option>
+        </optgroup>
+        <optgroup label="GB">
+          <option value="bf_alice">Alice</option>
+          <option value="bf_lily">Lily</option>
+          <option value="bm_fable">Fable</option>
+        </optgroup>
+      </select>
+    </div>
+    <textarea id="inputText" placeholder="Enter text here..." rows="5" class="textarea textarea-bordered w-full mb-4"></textarea>
+    <div class="flex gap-2">
+      <button id="speakBtn" class="btn btn-sm btn-primary">
+        <i class="fas fa-play"></i>
+      </button>
+      <button id="stopBtn" class="btn btn-sm btn-error" disabled>
+        <i class="fas fa-stop"></i>
+      </button>
+    </div>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

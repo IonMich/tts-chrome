@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "TTS Extension",
+  "version": "1.0",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "storage"
+  ],
+  "description": "A simple text-to-speech extension for Chrome.",
+  "icons": {
+    "16": "icons/icons8-speech-to-text-16.png",
+    "30": "icons/icons8-speech-to-text-30.png",
+    "90": "icons/icons8-speech-to-text-90.png"
+  },
+  "background": {
+    "service_worker": "background-ws.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "js/utils.js",
+        "js/tts.js",
+        "js/ui.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_scripts": [
+  {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "type": "module",
+      "run_at": "document_end"
+    }
+  ],
+  "commands": {
+    "trigger_tts": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Trigger TTS for selected text"
+    }
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Text-to-Speech"
+  }
+}
