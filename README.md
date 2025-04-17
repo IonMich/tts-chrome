@@ -19,10 +19,10 @@ A high‑quality, low‑latency Text‑to‑Speech Chrome extension (Manifest v3
 
 ## 1. Install Python Backend
 
-1. Clone this repository (chrome-tts):
+1. Clone this repository (tts-chrome):
    ```bash
-   git clone https://github.com/IonMich/chrome-tts.git
-   cd chrome-tts
+   git clone https://github.com/IonMich/tts-chrome.git
+   cd tts-chrome
    ```
 2. Ensure you have **UV** installed globally:
    ```bash
