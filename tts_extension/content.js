@@ -68,7 +68,12 @@
 
   function removeTTSControls() {
     const container = document.getElementById("tts-controls");
-    if (container) container.remove();
+    if (container) {
+      container.remove();
+      // also clear progress when controls go away
+      clearInterval(progressInterval);
+      removeProgressBar();
+    }
   }
 
   let paused = false;
@@ -94,26 +99,68 @@
 
   function monitorPlaybackAndRemoveControls() {
     const interval = setInterval(() => {
-      if (tts.activeSources.length === 0 && tts.activeSockets.length === 0) {
+      // only remove controls once all websocket streams closed and scheduled playback has finished
+      if (tts.activeSockets.length === 0 && tts.nextTime !== null && tts.audioContext.currentTime >= tts.nextTime) {
         clearInterval(interval);
         hideLoadingSpinner();
         removeTTSControls();
       }
-    }, 1000);
+    }, 500);
+  }
+
+  // Progress bar utilities
+  let progressInterval;
+  let barStartTime; // time when playback actually begins
+  let segment1Duration = 0; // actual duration of first segment
+
+  function createProgressBar() {
+    if (document.getElementById('tts-progress-container')) return;
+    const container = document.createElement('div');
+    container.id = 'tts-progress-container';
+    Object.assign(container.style, {
+      position: 'fixed', bottom: '10px', left: '10px',
+      width: '200px', height: '10px', backgroundColor: '#ccc', zIndex: '2147483647'
+    });
+    const bar = document.createElement('div');
+    bar.id = 'tts-progress-bar';
+    Object.assign(bar.style, {
+      width: '0%', height: '100%', backgroundColor: '#3b82f6'
+    });
+    container.appendChild(bar);
+    document.body.appendChild(container);
+  }
+  function updateProgressBar(elapsed, total) {
+    const percent = Math.min(100, (elapsed / total) * 100);
+    const bar = document.getElementById('tts-progress-bar');
+    if (bar) bar.style.width = percent + '%';
+  }
+  function removeProgressBar() {
+    const container = document.getElementById('tts-progress-container');
+    if (container) container.remove();
+  }
+
+  // Estimate duration based on character count
+  function estimateDuration(text) {
+    const charsPerSecond = 15; // rough initial guess
+    return text.length / charsPerSecond;
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "readText" && message.text) {
+      // prepare dynamic total duration
+      const { firstSegment, secondSegment } = utils.splitTextForHybrid(message.text, 15, 3);
+      let totalDuration = estimateDuration(message.text);
+
       // apply selected voice to TTS module
       if (message.voice) {
         tts.setCurrentVoice(message.voice);
       }
       tts.secondSegmentStarted = false;
       tts.nextTime = null;
-      const { firstSegment, secondSegment } = utils.splitTextForHybrid(message.text, 15, 3);
 
       showLoadingSpinner();
       const controls = createTTSControls();
+
       const pauseBtn = document.getElementById("pauseBtn");
       const stopBtnOverlay = document.getElementById("stopBtnOverlay");
 
@@ -128,11 +175,27 @@
       (async () => {
         tts.reset();
         try {
-          await tts.processSegment(firstSegment);
+          await tts.processSegment(firstSegment, () => {
+            // start progress bar on first chunk
+            createProgressBar();
+            barStartTime = tts.audioContext.currentTime;
+            // start continuous progress update using dynamic totalDuration
+            progressInterval = setInterval(() => {
+              const elapsed = tts.audioContext.currentTime - barStartTime;
+              updateProgressBar(elapsed, totalDuration);
+            }, 100);
+          });
+          // refine totalDuration after scheduling first segment
+          const actual1 = tts.nextTime - barStartTime;
+          const est2 = secondSegment ? estimateDuration(secondSegment) : 0;
+          totalDuration = actual1 + est2;
           hideLoadingSpinner();
           if (secondSegment) {
             await tts.processSegment(secondSegment);
+            // refine totalDuration with actual full schedule
+            totalDuration = tts.nextTime - barStartTime;
           }
+          // continue updating until playback end
           monitorPlaybackAndRemoveControls();
         } catch (e) {
           removeTTSControls();
