@@ -6,6 +6,7 @@ export default defineConfig({
   extensionApi: "chrome",
   srcDir: 'src',
   manifest: {
+    permissions: ['storage'],
     content_scripts: [
       {
         matches: ['*://*.google.com/*', '*://google.com/*'],
