@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Eraser, Play, StopCircle } from "lucide-react";
+import { Eraser, Play, StopCircle, Pause } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,6 +20,7 @@ import {
   reset,
   waitForPlaybackCompletion,
   setCurrentVoice,
+  audioContext,
 } from "@/lib/ttsClient";
 
 function App() {
@@ -27,6 +28,7 @@ function App() {
   const [voice, setVoice] = useState<string>("af_sarah");
   const [inputText, setInputText] = useState<string>("");
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
 
   // load persisted voice on mount
   useEffect(() => {
@@ -99,39 +101,53 @@ function App() {
         <Button
           variant="default"
           size="sm"
-          disabled={isSpeaking}
           onClick={async () => {
-            const fullText = inputText.trim();
-            if (!fullText) {
-              console.warn("No text provided");
-              return;
+            if (!isSpeaking) {
+              // start playback
+              const fullText = inputText.trim();
+              if (!fullText) {
+                console.warn("No text provided");
+                return;
+              }
+              setIsSpeaking(true);
+              setIsPaused(false);
+              reset();
+              const { firstSegment, secondSegment } = splitTextForHybrid(
+                fullText,
+                15,
+                3
+              );
+              try {
+                await processSegment(firstSegment);
+                if (secondSegment) await processSegment(secondSegment);
+              } catch (e) {
+                console.error("Error processing segments:", e);
+              }
+              await waitForPlaybackCompletion();
+              setIsSpeaking(false);
+              setIsPaused(false);
+            } else if (!isPaused) {
+              // pause playback
+              await audioContext.suspend();
+              setIsPaused(true);
+            } else {
+              // resume playback
+              await audioContext.resume();
+              setIsPaused(false);
             }
-            setIsSpeaking(true);
-            reset();
-            const { firstSegment, secondSegment } = splitTextForHybrid(
-              fullText,
-              15,
-              3
-            );
-            try {
-              await processSegment(firstSegment);
-              if (secondSegment) await processSegment(secondSegment);
-            } catch (e) {
-              console.error("Error processing segments:", e);
-            }
-            await waitForPlaybackCompletion();
-            setIsSpeaking(false);
           }}
         >
-          <Play size={16} />
+          {!isSpeaking || isPaused ? <Play size={16} /> : <Pause size={16} />}
         </Button>
         <Button
           variant="destructive"
           size="sm"
           disabled={!isSpeaking}
           onClick={() => {
+            // stop playback entirely
             stopSpeech();
             setIsSpeaking(false);
+            setIsPaused(false);
           }}
         >
           <StopCircle size={16} />

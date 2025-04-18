@@ -7,7 +7,7 @@ console.log(`[TTS Client] WebAudio audioContext.sampleRate: ${audioContext.sampl
 gainNode.gain.value = 2.0
 gainNode.connect(audioContext.destination)
 
-let nextTime: number | null = null
+export let nextTime: number | null = null
 let secondSegmentStarted = false
 
 export let activeSources: AudioBufferSourceNode[] = []
@@ -24,7 +24,8 @@ export function reset() {
 }
 
 export async function processSegment(
-  segmentText: string
+  segmentText: string,
+  onFirstChunk?: () => void
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const ws = new WebSocket("ws://localhost:5050")
@@ -72,9 +73,8 @@ export async function processSegment(
 
       if (!firstChunkReceived) {
         firstChunkReceived = true
-        if (!secondSegmentStarted) {
-          secondSegmentStarted = true
-        }
+        if (!secondSegmentStarted) secondSegmentStarted = true
+        if (onFirstChunk) onFirstChunk()
       }
 
       const arrayBuffer = event.data as ArrayBuffer
