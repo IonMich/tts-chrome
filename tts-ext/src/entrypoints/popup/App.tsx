@@ -1,13 +1,156 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { Eraser, Play, StopCircle } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectGroup,
+  SelectLabel,
+  SelectItem,
+} from "@/components/ui/select";
+import { splitTextForHybrid } from "@/lib/utilsText";
+import {
+  processSegment,
+  stopSpeech,
+  reset,
+  waitForPlaybackCompletion,
+  setCurrentVoice,
+} from "@/lib/ttsClient";
 
 function App() {
-  const [count, setCount] = useState(0);
+  // state for voice selection, input text, and speaking status
+  const [voice, setVoice] = useState<string>("af_sarah");
+  const [inputText, setInputText] = useState<string>("");
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+
+  // load persisted voice on mount
+  useEffect(() => {
+    const storageSync = globalThis.chrome?.storage?.sync;
+    if (!storageSync) {
+      console.warn("chrome.storage.sync not available");
+      return;
+    }
+    storageSync.get(["voice"], ({ voice: stored }) => {
+      const v = stored || "af_sarah";
+      setVoice(v);
+      setCurrentVoice(v);
+    });
+  }, []);
 
   return (
-    <div className="m-10">
-      <Button onClick={() => setCount(count + 1)}>Count: {count}</Button>
-    </div>
+    <Card className="m-1 p-2 min-w-[300px] rounded-sm shadow-md">
+      <div className="flex items-center justify-center m-4 p-4">
+        <h2 className="text-xl font-medium">TTS Converter</h2>
+      </div>
+      <div className="mb-4">
+        <Label htmlFor="voiceSelect">Voice</Label>
+        <Select
+          value={voice}
+          onValueChange={(value) => {
+            setVoice(value);
+            setCurrentVoice(value);
+            const storageSync = globalThis.chrome?.storage?.sync;
+            if (storageSync) {
+              storageSync.set({ voice: value });
+            }
+          }}
+        >
+          <SelectTrigger id="voiceSelect" className="w-full mb-2">
+            <SelectValue placeholder="Select a voice" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectLabel>US Female</SelectLabel>
+              <SelectItem value="af_sarah">Sarah (Default)</SelectItem>
+              <SelectItem value="af_alloy">Alloy</SelectItem>
+              <SelectItem value="af_nicole">
+                Nicole (Relaxation/Sleep)
+              </SelectItem>
+            </SelectGroup>
+            <SelectGroup>
+              <SelectLabel>US Male</SelectLabel>
+              <SelectItem value="am_adam">Adam</SelectItem>
+              <SelectItem value="am_michael">Michael</SelectItem>
+              <SelectItem value="am_onyx">Onyx</SelectItem>
+            </SelectGroup>
+            <SelectGroup>
+              <SelectLabel>GB</SelectLabel>
+              <SelectItem value="bf_alice">Alice</SelectItem>
+              <SelectItem value="bf_lily">Lily</SelectItem>
+              <SelectItem value="bm_fable">Fable</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </div>
+      <Textarea
+        id="inputText"
+        placeholder="Enter text here..."
+        rows={5}
+        value={inputText}
+        onChange={(e) => setInputText(e.target.value)}
+        className="w-full mb-4"
+      />
+      <div className="flex gap-2">
+        <Button
+          variant="default"
+          size="sm"
+          disabled={isSpeaking}
+          onClick={async () => {
+            const fullText = inputText.trim();
+            if (!fullText) {
+              console.warn("No text provided");
+              return;
+            }
+            setIsSpeaking(true);
+            reset();
+            const { firstSegment, secondSegment } = splitTextForHybrid(
+              fullText,
+              15,
+              3
+            );
+            try {
+              await processSegment(firstSegment);
+              if (secondSegment) await processSegment(secondSegment);
+            } catch (e) {
+              console.error("Error processing segments:", e);
+            }
+            await waitForPlaybackCompletion();
+            setIsSpeaking(false);
+          }}
+        >
+          <Play size={16} />
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={!isSpeaking}
+          onClick={() => {
+            stopSpeech();
+            setIsSpeaking(false);
+          }}
+        >
+          <StopCircle size={16} />
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="ml-auto"
+          onClick={() => {
+            /* clear input and reset state */
+            setInputText("");
+            setVoice("af_sarah");
+            setIsSpeaking(false);
+          }}
+        >
+          <Eraser size={16} />
+        </Button>
+      </div>
+    </Card>
   );
 }
 
