@@ -14,9 +14,10 @@ export default defineBackground(() => {
       chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
         const target = tabs[0];
         if (target && target.id != null) {
-          chrome.storage.sync.get(['voice']).then(({ voice }) => {
+          chrome.storage.sync.get(['voice', 'speed']).then(({ voice, speed }) => {
             const v = voice || 'af_sarah';
-            chrome.tabs.sendMessage(target.id!, { action: 'readText', text: info.selectionText!, voice: v });
+            const sp = speed ?? 1.0;
+            chrome.tabs.sendMessage(target.id!, { action: 'readText', text: info.selectionText!, voice: v, speed: sp });
           });
         }
       });
@@ -35,9 +36,10 @@ export default defineBackground(() => {
           }).then((results) => {
             const selected = results[0]?.result as string;
             if (selected.trim()) {
-              chrome.storage.sync.get(['voice']).then(({ voice }) => {
+              chrome.storage.sync.get(['voice', 'speed']).then(({ voice, speed }) => {
                 const v = voice || 'af_sarah';
-                chrome.tabs.sendMessage(target.id!, { action: 'readText', text: selected, voice: v });
+                const sp = speed ?? 1.0;
+                chrome.tabs.sendMessage(target.id!, { action: 'readText', text: selected, voice: v, speed: sp });
               });
             }
           });

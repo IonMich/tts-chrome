@@ -7,6 +7,7 @@ import { stopSpeech } from '@/lib/ttsClient';
 interface Request {
   text: string;
   voice: string;
+  speed: number;
 }
 
 const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
@@ -46,8 +47,8 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
   useEffect(() => {
     const listener = (message: any) => {
       if (message.action === "readText" && message.text) {
-        console.log('[OverlayManager] received TTS request:', message.text, message.voice);
-        const req = { text: message.text, voice: message.voice };
+        console.log('[OverlayManager] received TTS request:', message.text, message.voice, message.speed);
+        const req: Request = { text: message.text, voice: message.voice, speed: message.speed };
         if (!currentRef.current) {
           console.log('[OverlayManager] starting immediately:', req.text);
           currentRef.current = req;
@@ -116,6 +117,7 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
         key={currentKey}
         text={current.text}
         voice={current.voice}
+        speed={current.speed}
         onClose={handleClose}
       />
       {queueEnabled && queue.length > 0 && (

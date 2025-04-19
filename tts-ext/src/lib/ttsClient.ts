@@ -1,5 +1,3 @@
-import { getWords, splitTextForHybrid } from "./utilsText"
-
 export const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
 export const gainNode = audioContext.createGain()
 // Log default WebAudio sample rate
@@ -13,9 +11,14 @@ let secondSegmentStarted = false
 export let activeSources: AudioBufferSourceNode[] = []
 export let activeSockets: WebSocket[] = []
 export let currentVoice = 'af_sarah'
+export let currentSpeed = 1.0;
 
 export function setCurrentVoice(voice: string) {
   currentVoice = voice
+}
+
+export function setCurrentSpeed(speed: number) {
+  currentSpeed = speed
 }
 
 export function reset() {
@@ -44,7 +47,7 @@ export async function processSegment(
       if (nextTime === null) nextTime = audioContext.currentTime
       segmentStartTime = performance.now()
       firstChunkReceived = false
-      ws.send(JSON.stringify({ text: segmentText, voice: currentVoice }))
+      ws.send(JSON.stringify({ text: segmentText, voice: currentVoice, speed: currentSpeed }))
     }
 
     ws.onmessage = event => {

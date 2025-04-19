@@ -14,12 +14,13 @@ async def stream_tts(websocket, path=None):
         data = json.loads(message)
         text = data.get("text", "")
         voice = data.get("voice", "af_sarah")
+        speed = data.get("speed", 1.0)
         if not text:
             await websocket.send(json.dumps({"error": "No text provided"}))
             return
 
-        # Create an asynchronous stream for TTS generation with selected voice
-        stream = kokoro.create_stream(text, voice=voice, speed=1.0, lang="en-us")
+        # Create an asynchronous stream for TTS generation with selected voice and speed
+        stream = kokoro.create_stream(text, voice=voice, speed=speed, lang="en-us")
         print(f"Streaming TTS for text: {text}")
         # Send sample_rate once, then stream PCM bytes.
         sent_rate = False

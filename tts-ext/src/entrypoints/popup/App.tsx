@@ -21,12 +21,15 @@ import {
   reset,
   waitForPlaybackCompletion,
   setCurrentVoice,
+  setCurrentSpeed,
   audioContext,
 } from "@/lib/ttsClient";
 
 function App() {
   // state for voice selection, input text, and speaking status
   const [voice, setVoice] = useState<string>("af_sarah");
+  // state for playback speed
+  const [speed, setSpeed] = useState<string>("1.0");
   const [inputText, setInputText] = useState<string>("");
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
@@ -44,6 +47,12 @@ function App() {
       setVoice(v);
       setCurrentVoice(v);
     });
+    // load persisted speed on mount
+    storageSync.get(["speed"], ({ speed: storedSpeed }) => {
+      const sp = storedSpeed ?? 1.0;
+      setSpeed(sp.toFixed(1));
+      setCurrentSpeed(sp);
+    });
   }, []);
 
   // load persisted queue setting
@@ -54,11 +63,11 @@ function App() {
   }, []);
 
   return (
-    <Card className="m-1 p-2 min-w-[300px] rounded-sm shadow-md">
+    <Card className="m-1 p-2 gap-2 min-w-[300px] rounded-sm shadow-md">
       <div className="flex items-center justify-center m-4 p-4">
         <h2 className="text-xl font-medium">TTS Converter</h2>
       </div>
-      <div className="mb-4">
+      <div className="mb-4 flex gap-8">
         <Label htmlFor="voiceSelect">Voice</Label>
         <Select
           value={voice}
@@ -94,6 +103,33 @@ function App() {
               <SelectItem value="bf_alice">Alice</SelectItem>
               <SelectItem value="bf_lily">Lily</SelectItem>
               <SelectItem value="bm_fable">Fable</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="mb-4 flex gap-8">
+        <Label htmlFor="speedSelect">Speed</Label>
+        <Select
+          value={speed}
+          onValueChange={(value) => {
+            setSpeed(value);
+            const sp = parseFloat(value);
+            setCurrentSpeed(sp);
+            const storageSync = globalThis.chrome?.storage?.sync;
+            if (storageSync) storageSync.set({ speed: sp });
+          }}
+        >
+          <SelectTrigger id="speedSelect" className="w-24 mb-2">
+            <SelectValue placeholder="Select speed" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="0.5">0.5x</SelectItem>
+              <SelectItem value="0.75">0.75x</SelectItem>
+              <SelectItem value="1.0">1x</SelectItem>
+              <SelectItem value="1.25">1.25x</SelectItem>
+              <SelectItem value="1.5">1.5x</SelectItem>
+              <SelectItem value="2.0">2x</SelectItem>
             </SelectGroup>
           </SelectContent>
         </Select>
