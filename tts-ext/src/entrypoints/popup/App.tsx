@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Eraser, Play, StopCircle, Pause } from "lucide-react";
+import { Eraser, Play, StopCircle, Pause, List, CheckIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +13,7 @@ import {
   SelectLabel,
   SelectItem,
 } from "@/components/ui/select";
+import { Toggle } from "@/components/ui/toggle";
 import { splitTextForHybrid } from "@/lib/utilsText";
 import {
   processSegment,
@@ -29,6 +30,7 @@ function App() {
   const [inputText, setInputText] = useState<string>("");
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [queueEnabled, setQueueEnabled] = useState<boolean>(false);
 
   // load persisted voice on mount
   useEffect(() => {
@@ -41,6 +43,13 @@ function App() {
       const v = stored || "af_sarah";
       setVoice(v);
       setCurrentVoice(v);
+    });
+  }, []);
+
+  // load persisted queue setting
+  useEffect(() => {
+    chrome.storage.sync.get(["queueEnabled"]).then(({ queueEnabled: qe }) => {
+      setQueueEnabled(!!qe);
     });
   }, []);
 
@@ -152,10 +161,30 @@ function App() {
         >
           <StopCircle size={16} />
         </Button>
+        <Toggle
+          pressed={queueEnabled}
+          onPressedChange={(next) => {
+            setQueueEnabled(next);
+            chrome.storage.sync.set({ queueEnabled: next });
+          }}
+          variant="outline"
+          size="sm"
+          className="ml-auto"
+          title={queueEnabled ? "Queue mode on" : "Queue mode off"}
+          aria-label="Toggle request queue mode"
+        >
+          {queueEnabled ? (
+            <div className="flex items-center">
+              <List size={16} />
+              <CheckIcon size={16} />
+            </div>
+          ) : (
+            <List size={16} />
+          )}
+        </Toggle>
         <Button
           variant="secondary"
           size="sm"
-          className="ml-auto"
           onClick={() => {
             /* clear input and reset state */
             setInputText("");
