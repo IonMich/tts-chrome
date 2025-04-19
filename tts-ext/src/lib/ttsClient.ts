@@ -11,7 +11,13 @@ let secondSegmentStarted = false
 export let activeSources: AudioBufferSourceNode[] = []
 export let activeSockets: WebSocket[] = []
 export let currentVoice = 'af_sarah'
-export let currentSpeed = 1.0;
+export let currentSpeed = 1.0
+
+// track keys that have completed preload
+export const preloadedSegments: Record<string, boolean> = {}
+// track keys currently being preloaded to prevent duplicate sockets
+export const preloadingSegments: Set<string> = new Set()
+export const preloadedBuffers: Record<string, AudioBuffer[]> = {}
 
 export function setCurrentVoice(voice: string) {
   currentVoice = voice
@@ -112,6 +118,106 @@ export async function processSegment(
       resolve()
     }
   })
+}
+
+/**
+ * Preload TTS for text without scheduling playback.
+ */
+export async function preloadText(
+  text: string,
+  voice: string,
+  speed: number
+): Promise<void> {
+  const key = `${text}|${voice}|${speed}`
+  // skip if already loaded or currently loading
+  if (preloadedSegments[key] || preloadingSegments.has(key)) return
+  preloadingSegments.add(key)
+  preloadedBuffers[key] = []
+  console.log(`[TTS Client] preloadText: start key=${key}`)
+  let sampleRate = audioContext.sampleRate
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket("ws://localhost:5050")
+    ws.binaryType = "arraybuffer"
+    // apply voice and speed
+    setCurrentVoice(voice)
+    setCurrentSpeed(speed)
+    ws.onopen = () => {
+      console.log(`[TTS Client] preloadText: ws.open, sending text len=${text.length}`)
+      ws.send(JSON.stringify({ text, voice, speed }))
+    }
+    ws.onmessage = event => {
+      // handle JSON messages
+      if (typeof event.data === 'string') {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.error) {
+            ws.close(); reject(new Error(msg.error)); return
+          }
+          if (msg.end) { ws.close(); return }
+          
+          if (msg.sample_rate) {
+            console.log(`[TTS Client] preloadText: received server sample_rate=${msg.sample_rate}`)
+            sampleRate = msg.sample_rate
+          }
+        } catch {}
+        return
+      }
+      // decode but do not schedule
+      const arrayBuffer = event.data as ArrayBuffer
+      const int16Array = new Int16Array(arrayBuffer)
+      const float32Array = new Float32Array(int16Array.length)
+      for (let i = 0; i < int16Array.length; i++) {
+        float32Array[i] = int16Array[i] / 32767
+      }
+      console.log(`[TTS Client] preloadText: decoding chunk frames=${float32Array.length} sampleRate=${sampleRate}`)
+      // create AudioBuffer with server sampleRate and store it
+      const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate)
+      buffer.copyToChannel(float32Array, 0)
+      preloadedBuffers[key].push(buffer)
+    }
+    ws.onerror = err => reject(err)
+    ws.onclose = () => {
+      preloadingSegments.delete(key)
+      preloadedSegments[key] = true
+      console.log(`[TTS Client] preloadText: complete key=${key}, buffers=${preloadedBuffers[key].length}`)
+      resolve()
+    }
+  })
+}
+
+/**
+ * Play preloaded audio buffers for a given text|voice|speed key.
+ */
+export async function playPreloadedText(
+  text: string,
+  voice: string,
+  speed: number
+): Promise<void> {
+  const key = `${text}|${voice}|${speed}`
+  const buffers = preloadedBuffers[key]
+  if (!buffers || buffers.length === 0) return
+  console.log(`[TTS Client] playPreloadedText: playing key=${key}, buffers=${buffers.length}, speed=${speed}`)
+  // prepare audio context
+  if (audioContext.state === 'suspended') await audioContext.resume()
+  reset()
+  setCurrentVoice(voice)
+  setCurrentSpeed(speed)
+  // schedule all buffers sequentially at requested speed
+  nextTime = audioContext.currentTime
+  buffers.forEach(buffer => {
+    console.log(`[TTS Client] playPreloadedText: scheduling buffer duration=${buffer.duration}s @ t=${nextTime}`)
+    const src = audioContext.createBufferSource()
+    src.buffer = buffer
+    src.playbackRate.value = speed
+    src.connect(gainNode)
+    src.start(nextTime!)
+    activeSources.push(src)
+    src.onended = () => { activeSources = activeSources.filter(s => s !== src) }
+    // advance time by buffer duration adjusted for playbackRate
+    nextTime! += buffer.duration / speed
+  })
+  // wait until playback done
+  await waitForPlaybackCompletion()
 }
 
 export function stopSpeech() {

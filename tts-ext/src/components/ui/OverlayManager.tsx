@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import Overlay from "./Overlay";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
-import { stopSpeech } from "@/lib/ttsClient";
+import { stopSpeech, preloadText, preloadedSegments } from "@/lib/ttsClient";
+import { Skeleton } from "./skeleton";
 
 interface Request {
   text: string;
@@ -17,22 +18,20 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
     queueEnabledRef.current = queueEnabled;
   }, [queueEnabled]);
   const [queue, setQueue] = useState<Request[]>([]);
+  const [loadedKeys, setLoadedKeys] = useState<Set<string>>(new Set());
   const [current, setCurrent] = useState<Request | null>(null);
-  // unique key to remount Overlay on each new request
   const [currentKey, setCurrentKey] = useState(0);
   const currentRef = useRef(current);
   useEffect(() => {
     currentRef.current = current;
   }, [current]);
 
-  // load user setting
   useEffect(() => {
     chrome.storage.sync.get(["queueEnabled"]).then(({ queueEnabled: qe }) => {
       setQueueEnabled(!!qe);
     });
   }, []);
 
-  // respond to storage changes from popup
   useEffect(() => {
     const onStorage = (changes: any, area: string) => {
       if (area === "sync" && changes.queueEnabled) {
@@ -43,7 +42,6 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
     return () => chrome.storage.onChanged.removeListener(onStorage);
   }, []);
 
-  // listen for incoming TTS requests, using refs to pick up latest state
   useEffect(() => {
     const listener = (message: any) => {
       if (message.action === "readText" && message.text) {
@@ -72,12 +70,10 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
             "[OverlayManager] replacing current, interrupting playback:",
             req.text
           );
-          // Interrupt ongoing playback and unmount old Overlay
           stopSpeech();
           currentRef.current = null;
           setQueue([]);
           setCurrent(null);
-          // Schedule new playback on next tick
           setTimeout(() => {
             currentRef.current = req;
             setCurrent(req);
@@ -90,17 +86,31 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, []);
 
-  // keep queueRef in sync
   const queueRef = useRef(queue);
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
-  // stable close handler so Overlay doesn't reset on queue changes
+
+  useEffect(() => {
+    queue.forEach((req) => {
+      const key = `${req.text}|${req.voice}|${req.speed}`;
+      if (!preloadedSegments[key] && !loadedKeys.has(key)) {
+        preloadText(req.text, req.voice, req.speed)
+          .then(() => setLoadedKeys((prev) => new Set(prev).add(key)))
+          .catch(console.error);
+      } else if (preloadedSegments[key] && !loadedKeys.has(key)) {
+        setLoadedKeys((prev) => new Set(prev).add(key));
+      }
+    });
+  }, [queue, loadedKeys]);
+
   const handleClose = useCallback(() => {
     console.log(
-      "[OverlayManager] onClose called, current completed:",
+      "[OverlayManager] onClose called, stopping previous playback and advancing:",
       currentRef.current?.text
     );
+    // stop any lingering audio before starting next
+    stopSpeech();
     if (queueRef.current.length > 0) {
       const [next, ...rest] = queueRef.current;
       console.log("[OverlayManager] advancing to next in queue:", next.text);
@@ -115,12 +125,10 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
     }
   }, []);
 
-  // hide host if no current, show when playing
   useEffect(() => {
     host.style.display = current ? "" : "none";
   }, [current, host]);
 
-  // remove specific item from queue
   const removeQueueItem = (index: number) => {
     setQueue((q) => q.filter((_, i) => i !== index));
   };
@@ -139,31 +147,37 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
         <div className="fixed right-4 top-[calc(50%+6rem)] z-[9999] w-36 p-2 bg-card text-card-foreground rounded-md shadow-md">
           <div className="text-sm font-medium mb-1">Queue:</div>
           <div className="scroll-shadows space-y-1 overflow-y-auto max-h-40">
-            {queue.map((req, i) => (
-              <div key={i} className="relative text-xs group">
-                <div className="flex flex-col truncate min-w-0">
-                  <p className="truncate">{req.text}</p>
-                  <div className="text-muted-foreground ml-1">
-                    <span className="text-[10px]">
-                      {req.text.trim().split(/\s+/).filter(Boolean).length}{" "}
-                      words {req.speed > 0 ? `• ${req.speed}x` : ""}
-                      {req.speed > 0 && req.voice ? " • " : ""}
-                      {req.voice}
-                    </span>
+            {queue.map((req, i) => {
+              const key = `${req.text}|${req.voice}|${req.speed}`;
+              return (
+                <div key={i} className="relative text-xs group flex items-center">
+                  {!loadedKeys.has(key) && (
+                    <Skeleton className="h-4 w-4 mr-1 bg-primary/60" />
+                  )}
+                  <div className="flex flex-col truncate min-w-0">
+                    <p className="truncate">{req.text}</p>
+                    <div className="text-muted-foreground ml-1">
+                      <span className="text-[10px]">
+                        {req.text.trim().split(/\s+/).filter(Boolean).length}{" "}
+                        words {req.speed > 0 ? `• ${req.speed}x` : ""}
+                        {req.speed > 0 && req.voice ? " • " : ""}
+                        {req.voice}
+                      </span>
+                    </div>
                   </div>
+                  <Button
+                    variant="ghost"
+                    onClick={() => removeQueueItem(i)}
+                    aria-label="Remove from queue"
+                    className="absolute top-1/2 right-1 -translate-y-1/2 hover:bg-red-500 hover:text-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
+                    size="icon"
+                    asChild
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  onClick={() => removeQueueItem(i)}
-                  aria-label="Remove from queue"
-                  className="absolute top-1/2 right-1 -translate-y-1/2 hover:bg-red-500 hover:text-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                  size="icon"
-                  asChild
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

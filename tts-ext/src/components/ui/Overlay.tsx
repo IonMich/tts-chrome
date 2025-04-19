@@ -15,6 +15,8 @@ import {
   setCurrentSpeed,
   audioContext,
   nextTime,
+  preloadedSegments,
+  playPreloadedText,
 } from "@/lib/ttsClient";
 
 interface OverlayProps {
@@ -70,6 +72,19 @@ const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
   }, [text, voice, speed, onClose]);
 
   useEffect(() => {
+    const key = text + "|" + voice + "|" + speed;
+    // if already preloaded, play stored buffers and skip streaming
+    if (preloadedSegments[key]) {
+      setShowSpinner(true);
+      setIsPlaying(true);
+      playPreloadedText(text, voice, speed)
+        .then(() => {
+          setIsPlaying(false);
+          onClose();
+        })
+        .catch(err => console.error(err));
+      return;
+    }
     // start TTS processing
     let cancelled = false;
     // ensure speed is set for socket messages

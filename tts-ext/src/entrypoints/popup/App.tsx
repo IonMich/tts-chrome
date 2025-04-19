@@ -33,7 +33,7 @@ function App() {
   const [inputText, setInputText] = useState<string>("");
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
-  const [queueEnabled, setQueueEnabled] = useState<boolean>(false);
+  const [queueEnabled, setQueueEnabled] = useState<boolean>(true);
 
   // load persisted voice on mount
   useEffect(() => {
