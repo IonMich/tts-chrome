@@ -24,6 +24,8 @@ import {
   setCurrentSpeed,
   audioContext,
 } from "@/lib/ttsClient";
+// import { env } from '@huggingface/transformers';
+// import { KokoroTTS } from "kokoro-js";
 
 function App() {
   // state for voice selection, input text, and speaking status
@@ -34,6 +36,18 @@ function App() {
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [queueEnabled, setQueueEnabled] = useState<boolean>(true);
+  // const [kokoro, setKokoro] = useState<any>(null);
+
+  // const modelId = "onnx-community/Kokoro-82M-v1.0-ONNX";
+  // // load kokoro-js model once
+  // useEffect(() => {
+  //   (KokoroTTS.from_pretrained as any)(modelId, {
+  //     dtype: "fp32",
+  //     device: "webgpu"
+  //   })
+  //     .then(setKokoro)
+  //     .catch(console.error);
+  // }, []);
 
   // load persisted voice on mount
   useEffect(() => {
@@ -61,6 +75,19 @@ function App() {
       setQueueEnabled(!!qe);
     });
   }, []);
+
+  // const handleKokoroTest = async () => {
+  //   if (!kokoro) return;
+  //   try {
+  //     const text = "Hello, from kokoro-js. This is a test.";
+  //     const audioBlob = await kokoro.generate(text, { voice });
+  //     const url = URL.createObjectURL(audioBlob);
+  //     const audioEl = new Audio(url);
+  //     await audioEl.play();
+  //   } catch (e) {
+  //     console.error(e);
+  //   }
+  // };
 
   return (
     <Card className="m-1 p-2 gap-2 min-w-[300px] rounded-sm shadow-md">
@@ -197,6 +224,13 @@ function App() {
         >
           <StopCircle size={16} />
         </Button>
+        {/* <Button
+          size="sm"
+          variant="outline"
+          onClick={handleKokoroTest}
+        >
+          <WavesIcon size={16} />
+        </Button> */}
         <Toggle
           pressed={queueEnabled}
           onPressedChange={(next) => {
