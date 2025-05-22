@@ -42,7 +42,7 @@ wget https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.
 
 ```bash
 cd tts-chrome
-python websocket-server.py
+uv run websocket-server.py
 ```
 
 The server listens on `ws://localhost:5050` by default.
