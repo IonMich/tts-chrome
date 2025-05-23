@@ -185,6 +185,95 @@ export async function preloadText(
   })
 }
 
+// Kokoro-JS client-side TTS processing
+let kokoroInstance: any = null;
+
+export function setKokoroInstance(instance: any) {
+  console.log("[TTS Client] Kokoro instance is being set.");
+  kokoroInstance = instance; // Set the global instance
+}
+
+export async function processSegmentClientSide(
+  segmentText: string,
+  onFirstChunk?: () => void
+): Promise<void> {
+  if (!kokoroInstance) {
+    console.error("[TTS Client CS] processSegment: Kokoro instance not set.");
+    throw new Error("Kokoro instance not set. TTS operations cannot proceed.");
+  }
+  const activeKokoroInstance = kokoroInstance;
+
+  try {
+    if (audioContext.state === "suspended") await audioContext.resume();
+    if (nextTime === null) nextTime = audioContext.currentTime;
+
+    console.log(`[TTS Client CS] processSegment started for text length ${segmentText.length}`);
+    const audioOutput = await activeKokoroInstance.generate(segmentText, { voice: currentVoice, speed: currentSpeed });
+    const audioBlob = audioOutput.toBlob();
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    
+    if (onFirstChunk) onFirstChunk();
+
+    if (nextTime! < audioContext.currentTime) nextTime = audioContext.currentTime;
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(gainNode);
+    source.start(nextTime!);
+
+    activeSources.push(source);
+    source.onended = () => {
+      activeSources = activeSources.filter(s => s !== source);
+    };
+    nextTime! += audioBuffer.duration;
+
+    console.log(`[TTS Client CS] AudioBuffer created and scheduled: sampleRate=${audioBuffer.sampleRate}, duration=${audioBuffer.duration}`);
+    await waitForPlaybackCompletion();
+  } catch (error) {
+    console.error("[TTS Client CS] Error in processSegmentClientSide (TTS generation):", error);
+    throw error;
+  }
+}
+
+export async function preloadTextClientSide(
+  text: string,
+  voice: string,
+  speed: number
+): Promise<void> {
+  if (!kokoroInstance) {
+    console.error(`[TTS Client CS] preloadText: Kokoro instance not set for key ${text}|${voice}|${speed}|clientside.`);
+    throw new Error("Kokoro instance not set. TTS preload operations cannot proceed.");
+  }
+  const activeKokoroInstance = kokoroInstance;
+  const key = `${text}|${voice}|${speed}|clientside`;
+
+  try {
+    if (preloadedSegments[key] || preloadingSegments.has(key)) {
+      console.log(`[TTS Client CS] preloadText (key: ${key}): Already preloaded or preloading.`);
+      return;
+    }
+
+    preloadingSegments.add(key);
+    preloadedBuffers[key] = [];
+    console.log(`[TTS Client CS] preloadText: start key=${key}`);
+
+    const audioOutput = await activeKokoroInstance.generate(text, { voice, speed });
+    const audioBlob = audioOutput.toBlob();
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+    preloadedBuffers[key].push(audioBuffer);
+    preloadedSegments[key] = true;
+    console.log(`[TTS Client CS] preloadText: complete key=${key}, buffers=${preloadedBuffers[key].length}`);
+  } catch (error) {
+    console.error(`[TTS Client CS] Error in preloadTextClientSide (key: ${key}, TTS generation):`, error);
+    throw error;
+  } finally {
+    preloadingSegments.delete(key);
+  }
+}
+
+
 /**
  * Play preloaded audio buffers for a given text|voice|speed key.
  */

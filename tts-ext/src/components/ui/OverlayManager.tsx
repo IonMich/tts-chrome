@@ -2,7 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import Overlay from "./Overlay";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
-import { stopSpeech, preloadText, preloadedSegments } from "@/lib/ttsClient";
+import {
+  stopSpeech,
+  preloadTextClientSide,
+  preloadedSegments,
+} from "@/lib/ttsClient";
 import { Skeleton } from "./skeleton";
 
 interface Request {
@@ -93,9 +97,9 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
 
   useEffect(() => {
     queue.forEach((req) => {
-      const key = `${req.text}|${req.voice}|${req.speed}`;
+      const key = `${req.text}|${req.voice}|${req.speed}|clientside`;
       if (!preloadedSegments[key] && !loadedKeys.has(key)) {
-        preloadText(req.text, req.voice, req.speed)
+        preloadTextClientSide(req.text, req.voice, req.speed)
           .then(() => setLoadedKeys((prev) => new Set(prev).add(key)))
           .catch(console.error);
       } else if (preloadedSegments[key] && !loadedKeys.has(key)) {
@@ -150,7 +154,10 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
             {queue.map((req, i) => {
               const key = `${req.text}|${req.voice}|${req.speed}`;
               return (
-                <div key={i} className="relative text-xs group flex items-center">
+                <div
+                  key={i}
+                  className="relative text-xs group flex items-center"
+                >
                   {!loadedKeys.has(key) && (
                     <Skeleton className="h-4 w-4 mr-1 bg-primary/60" />
                   )}

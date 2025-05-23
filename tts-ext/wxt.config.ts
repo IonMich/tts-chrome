@@ -24,6 +24,16 @@ export default defineConfig({
         suggested_key: { default: 'Ctrl+Shift+S', mac: 'Command+Shift+S' },
         description: 'Trigger TTS for selected text'
       }
-    }
+    },
+    web_accessible_resources: [
+      {
+        resources: [
+          "models/Kokoro-82M-v1.0-ONNX/*",
+          "models/Kokoro-82M-v1.0-ONNX/onnx/*",
+          "onnx/*"
+        ],
+        matches: ["<all_urls>"] // Or more restrictive if appropriate
+      }
+    ]
   }
 });

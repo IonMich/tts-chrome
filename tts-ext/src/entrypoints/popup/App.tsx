@@ -1,14 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  Eraser,
-  Play,
-  StopCircle,
-  Pause,
-  List,
-  CheckIcon,
-  Waves,
-} from "lucide-react";
+import { Eraser, Play, StopCircle, Pause, List, CheckIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -25,13 +17,15 @@ import { Toggle } from "@/components/ui/toggle";
 import { Progress } from "@/components/ui/progress"; // Added import
 import { splitTextForHybrid } from "@/lib/utilsText";
 import {
-  processSegment,
+  // processSegment,
   stopSpeech,
   reset,
   waitForPlaybackCompletion,
   setCurrentVoice,
   setCurrentSpeed,
   audioContext,
+  setKokoroInstance, // Import setKokoroInstance
+  processSegmentClientSide, // Import client-side function
 } from "@/lib/ttsClient";
 import { detectWebGPU } from "@/lib/utils";
 import { env, KokoroTTS } from "kokoro-js";
@@ -86,6 +80,7 @@ function App() {
         .then((model) => {
           console.log("Kokoro model loaded");
           setKokoro(model);
+          setKokoroInstance(model); // Set kokoro instance in ttsClient
         })
         .catch((err) => {
           console.error("Failed to load Kokoro model:", err);
@@ -122,25 +117,6 @@ function App() {
       setQueueEnabled(!!qe);
     });
   }, []);
-
-  // handler to test Kokoro-JS TTS
-  const handleKokoroTest = async () => {
-    console.log("handleKokoroTest invoked, kokoro is", kokoro);
-    if (!kokoro) {
-      console.warn("Kokoro model not ready yet");
-      return;
-    }
-    try {
-      console.log("Generating audio with Kokoro...");
-      const audioOutput = await kokoro.generate(inputText, { voice });
-      const audioBlob = audioOutput.toBlob();
-      const url = URL.createObjectURL(audioBlob);
-      const audioEl = new Audio(url);
-      await audioEl.play();
-    } catch (e) {
-      console.error(e);
-    }
-  };
 
   return (
     <Card className="m-1 p-2 gap-2 min-w-[300px] rounded-sm shadow-md">
@@ -245,14 +221,17 @@ function App() {
                   setIsSpeaking(true);
                   setIsPaused(false);
                   reset();
-                  const { firstSegment, secondSegment } = splitTextForHybrid(
-                    fullText,
-                    15,
-                    3
-                  );
+                  const { firstSegment, secondSegment } =
+                    splitTextForHybrid(fullText);
                   try {
-                    await processSegment(firstSegment);
-                    if (secondSegment) await processSegment(secondSegment);
+                    // Original WebSocket version
+                    // await processSegment(firstSegment);
+                    // if (secondSegment) await processSegment(secondSegment);
+
+                    // Client-side version
+                    await processSegmentClientSide(firstSegment);
+                    if (secondSegment)
+                      await processSegmentClientSide(secondSegment);
                   } catch (e) {
                     console.error("Error processing segments:", e);
                   }
@@ -288,14 +267,6 @@ function App() {
               }}
             >
               <StopCircle size={16} />
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleKokoroTest}
-              disabled={!kokoro || isSpeaking || inputText.trim() === ""}
-            >
-              <Waves size={16} />
             </Button>
             <Toggle
               pressed={queueEnabled}

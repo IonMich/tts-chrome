@@ -7,7 +7,7 @@ import { Play, Pause, StopCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { splitTextForHybrid } from "@/lib/utilsText";
 import {
-  processSegment,
+  processSegmentClientSide, // Import processSegmentClientSide
   stopSpeech,
   reset,
   waitForPlaybackCompletion,
@@ -72,7 +72,7 @@ const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
   }, [text, voice, speed, onClose]);
 
   useEffect(() => {
-    const key = text + "|" + voice + "|" + speed;
+    const key = `${text}|${voice}|${speed}|clientside`; // Add |clientside to key
     // if already preloaded, play stored buffers and skip streaming
     if (preloadedSegments[key]) {
       setShowSpinner(true);
@@ -82,7 +82,7 @@ const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
           setIsPlaying(false);
           onClose();
         })
-        .catch(err => console.error(err));
+        .catch((err) => console.error(err));
       return;
     }
     // start TTS processing
@@ -92,7 +92,7 @@ const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
     setCurrentVoice(voice);
     reset();
 
-    const { firstSegment, secondSegment } = splitTextForHybrid(text, 15, 3);
+    const { firstSegment, secondSegment } = splitTextForHybrid(text);
     // baseline duration at 1× before actual scheduling
     let totalDurationLocal = estimateDuration(text);
     setTotalDuration(totalDurationLocal);
@@ -117,7 +117,7 @@ const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
       setIsPlaying(true);
       try {
         // process first segment and then estimate full duration
-        await processSegment(firstSegment, onFirstChunk);
+        await processSegmentClientSide(firstSegment, onFirstChunk); // Use processSegmentClientSide
         if (secondSegment) {
           // measure real playback time for first segment
           const firstReal = nextTime! - barStart;
@@ -126,7 +126,7 @@ const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
           totalDurationLocal = estBaselineTotal;
           setTotalDuration(estBaselineTotal);
           setIsEstimated(true);
-          await processSegment(secondSegment);
+          await processSegmentClientSide(secondSegment); // Use processSegmentClientSide
           // after scheduling both segments, compute final baseline total
           const realTotal = nextTime! - barStart;
           totalDurationLocal = realTotal * speed;
