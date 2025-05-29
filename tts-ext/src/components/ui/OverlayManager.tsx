@@ -95,18 +95,36 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
     queueRef.current = queue;
   }, [queue]);
 
-  useEffect(() => {
-    queue.forEach((req) => {
-      const key = `${req.text}|${req.voice}|${req.speed}|clientside`;
+  // Preload only the next item in queue when current item finishes processing
+  const preloadNext = useCallback(() => {
+    const currentQueue = queueRef.current;
+    console.log(`[OverlayManager] preloadNext called, queue length: ${currentQueue.length} (state: ${queue.length})`);
+    // We need to preload the item that will be next AFTER the current queue advancement
+    // When onProcessingComplete is called, the queue hasn't been advanced yet
+    // So if currentQueue.length > 1, we want to preload currentQueue[1] (the item after the next one)
+    // But for a single item queue (length 1), we want to preload currentQueue[0]
+    if (currentQueue.length > 0) {
+      const indexToPreload = currentQueue.length > 1 ? 1 : 0;
+      const nextReq = currentQueue[indexToPreload];
+      const key = `${nextReq.text}|${nextReq.voice}|${nextReq.speed}|clientside`;
+      console.log(`[OverlayManager] Preloading item at index ${indexToPreload}: ${nextReq.text.substring(0, 50)}...`);
+      
       if (!preloadedSegments[key] && !loadedKeys.has(key)) {
-        preloadTextClientSide(req.text, req.voice, req.speed)
-          .then(() => setLoadedKeys((prev) => new Set(prev).add(key)))
+        console.log(`[OverlayManager] Starting preload for index ${indexToPreload}: ${nextReq.text.substring(0, 50)}...`);
+        preloadTextClientSide(nextReq.text, nextReq.voice, nextReq.speed)
+          .then(() => {
+            console.log(`[OverlayManager] Preload completed for index ${indexToPreload}: ${nextReq.text.substring(0, 50)}...`);
+            setLoadedKeys((prev) => new Set(prev).add(key));
+          })
           .catch(console.error);
       } else if (preloadedSegments[key] && !loadedKeys.has(key)) {
+        console.log(`[OverlayManager] Preload already complete for index ${indexToPreload}: ${nextReq.text.substring(0, 50)}...`);
         setLoadedKeys((prev) => new Set(prev).add(key));
       }
-    });
-  }, [queue, loadedKeys]);
+    } else {
+      console.log(`[OverlayManager] preloadNext called but queue is empty`);
+    }
+  }, [loadedKeys]);
 
   const handleClose = useCallback(() => {
     console.log(
@@ -146,13 +164,14 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
         voice={current.voice}
         speed={current.speed}
         onClose={handleClose}
+        onProcessingComplete={preloadNext}
       />
       {queueEnabled && queue.length > 0 && (
         <div className="fixed right-4 top-[calc(50%+6rem)] z-[9999] w-36 p-2 bg-card text-card-foreground rounded-md shadow-md">
           <div className="text-sm font-medium mb-1">Queue:</div>
           <div className="scroll-shadows space-y-1 overflow-y-auto max-h-40">
             {queue.map((req, i) => {
-              const key = `${req.text}|${req.voice}|${req.speed}`;
+              const key = `${req.text}|${req.voice}|${req.speed}|clientside`;
               return (
                 <div
                   key={i}

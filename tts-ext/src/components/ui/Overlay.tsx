@@ -24,6 +24,7 @@ interface OverlayProps {
   voice: string;
   speed: number;
   onClose: () => void;
+  onProcessingComplete?: () => void; // Called when TTS processing is complete
 }
 
 const estimateDuration = (text: string) => text.length / 15;
@@ -34,7 +35,7 @@ const formatTime = (seconds: number) => {
   return `${m}:${s.toString().padStart(2, "0")}`;
 };
 
-const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
+const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose, onProcessingComplete }) => {
   // detect each unique text|voice request during render
   const reqKey = text + "|" + voice;
   const prevReqKey = useRef(reqKey);
@@ -79,22 +80,74 @@ const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
     const key = `${text}|${voice}|${speed}|clientside`; // Add |clientside to key
     // if already preloaded, play stored buffers and skip streaming
     if (preloadedSegments[key]) {
-      setShowSpinner(true);
+      console.log(`[Overlay] Playing preloaded segment: ${text.substring(0, 50)}...`);
+      setShowSpinner(false); // No spinner for preloaded content
       setIsPlaying(true);
       setIsEstimated(false); // Preloaded text has actual duration, not estimated
-      playPreloadedText(text, voice, speed)
+      isNewRequest.current = false; // Mark as not new since it's preloaded
+      
+      // Call processing complete immediately for preloaded content
+      console.log(`[Overlay] Calling onProcessingComplete for preloaded content: ${text.substring(0, 50)}...`);
+      if (onProcessingComplete) {
+        onProcessingComplete();
+      }
+      
+      // Set up progress tracking for preloaded content
+      let barStart = 0;
+      let intervalId: number | undefined;
+      let cancelled = false;
+      
+      const onFirstChunk = (actualDuration?: number) => {
+        if (cancelled) return;
+        isNewRequest.current = false;
+        setShowSpinner(false);
+        barStart = audioContext.currentTime;
+        
+        if (actualDuration) {
+          totalDurationLocal = actualDuration * speed; // Convert to baseline duration
+          setTotalDuration(totalDurationLocal);
+          console.log(`[Overlay] Preloaded segment duration: ${actualDuration}s (real) -> ${totalDurationLocal}s (baseline at ${speed}x)`);
+        }
+        
+        if (intervalId !== undefined) clearInterval(intervalId);
+        intervalId = window.setInterval(() => {
+          if (cancelled || barStart === 0 || !audioContext) {
+            if (intervalId !== undefined) clearInterval(intervalId);
+            return;
+          }
+          const elapsedReal = audioContext.currentTime - barStart;
+          const elapsedBaseline = elapsedReal * speed;
+          const pct = Math.min(100, (elapsedBaseline / totalDurationLocal) * 100);
+          setElapsed(elapsedBaseline);
+          setProgress(pct);
+        }, 100);
+      };
+      
+      playPreloadedText(text, voice, speed, onFirstChunk)
         .then(() => {
-          setIsPlaying(false);
-          onClose();
+          if (intervalId !== undefined) clearInterval(intervalId);
+          if (!cancelled) {
+            setElapsed(totalDurationLocal);
+            setProgress(100);
+            setIsPlaying(false);
+            onClose();
+          }
         })
         .catch((err) => console.error(err));
-      return;
+        
+      return () => {
+        cancelled = true;
+        if (intervalId !== undefined) clearInterval(intervalId);
+        stopSpeech();
+      };
     }
     // start TTS processing
     let cancelled = false;
     // ensure speed is set for socket messages
     setCurrentSpeed(speed);
     setCurrentVoice(voice);
+    // Stop any existing speech and streaming processes before starting new one
+    stopSpeech();
     reset();
 
     // const { firstSegment, secondSegment } = splitTextForHybrid(text); // Removed
@@ -159,6 +212,13 @@ const Overlay: React.FC<OverlayProps> = ({ text, voice, speed, onClose }) => {
               setTotalDuration(totalDurationLocal);
               setIsEstimated(false); // Now we have the actual final duration
               console.log(`[Overlay] Streaming complete: final duration=${finalDuration}s (real) -> ${totalDurationLocal}s (baseline at ${speed}x)`);
+              
+              // Notify that processing is complete (for preloading next item)
+              // This happens when streaming processing is complete, even if playback is still ongoing
+              console.log(`[Overlay] Calling onProcessingComplete for streaming content: ${text.substring(0, 50)}...`);
+              if (onProcessingComplete) {
+                onProcessingComplete();
+              }
             }
           );
 

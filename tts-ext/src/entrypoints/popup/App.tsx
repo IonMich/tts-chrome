@@ -219,6 +219,8 @@ function App() {
                   }
                   setIsSpeaking(true);
                   setIsPaused(false);
+                  // Stop any existing speech and streaming processes before starting new one
+                  stopSpeech();
                   reset();
                   // const { firstSegment, secondSegment } =
                   //   splitTextForHybrid(fullText); // Removed

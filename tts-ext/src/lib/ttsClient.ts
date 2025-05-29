@@ -187,6 +187,8 @@ export async function preloadText(
 
 // Kokoro-JS client-side TTS processing
 let kokoroInstance: any = null;
+// Track active streaming process for cancellation
+let activeStreamingController: AbortController | null = null;
 
 export function setKokoroInstance(instance: any) {
   console.log("[TTS Client] Kokoro instance is being set.");
@@ -280,12 +282,26 @@ export async function preloadTextClientSide(
 export async function playPreloadedText(
   text: string,
   voice: string,
-  speed: number
+  speed: number,
+  onFirstChunk?: (actualDuration?: number) => void
 ): Promise<void> {
-  const key = `${text}|${voice}|${speed}`
+  const key = `${text}|${voice}|${speed}|clientside`
   const buffers = preloadedBuffers[key]
-  if (!buffers || buffers.length === 0) return
+  if (!buffers || buffers.length === 0) {
+    console.log(`[TTS Client] playPreloadedText: no buffers found for key=${key}`)
+    return
+  }
   console.log(`[TTS Client] playPreloadedText: playing key=${key}, buffers=${buffers.length}, speed=${speed}`)
+  
+  // Calculate total duration
+  const totalDuration = buffers.reduce((total, buffer) => total + buffer.duration, 0);
+  console.log(`[TTS Client] playPreloadedText: total duration=${totalDuration}s`);
+  
+  // Call onFirstChunk with actual duration immediately
+  if (onFirstChunk) {
+    onFirstChunk(totalDuration);
+  }
+  
   // prepare audio context
   if (audioContext.state === 'suspended') await audioContext.resume()
   reset()
@@ -310,6 +326,13 @@ export async function playPreloadedText(
 }
 
 export function stopSpeech() {
+  // Cancel any active streaming process
+  if (activeStreamingController) {
+    console.log('[TTS Client] Aborting active streaming process');
+    activeStreamingController.abort();
+    activeStreamingController = null;
+  }
+
   activeSources.forEach(source => {
     try {
       source.stop()
@@ -346,6 +369,16 @@ export async function processSegmentClientSideStreaming(
     throw new Error("Kokoro instance not set. TTS operations cannot proceed.");
   }
 
+  // Cancel any existing streaming process
+  if (activeStreamingController) {
+    console.log('[TTS Client CSS] Cancelling previous streaming process');
+    activeStreamingController.abort();
+  }
+
+  // Create new abort controller for this streaming process
+  const abortController = new AbortController();
+  activeStreamingController = abortController;
+
   try {
     if (audioContext.state === "suspended") await audioContext.resume();
     if (nextTime === null) nextTime = audioContext.currentTime;
@@ -368,12 +401,24 @@ export async function processSegmentClientSideStreaming(
     const streamProcessor = (async () => {
       let segmentIndex = 0;
       for await (const { text, phonemes, audio } of stream) {
+        // Check if this process has been cancelled
+        if (abortController.signal.aborted) {
+          console.log(`[TTS Client CSS] Streaming process cancelled at segment ${segmentIndex}`);
+          return;
+        }
+
         console.log(`[TTS Client CSS] Processing segment ${segmentIndex}: "${text.substring(0, 50)}..."`);
         
         // Convert audio to AudioBuffer using the current voice and speed
         const audioBlob = audio.toBlob();
         const arrayBuffer = await audioBlob.arrayBuffer();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        
+        // Check again after async operations
+        if (abortController.signal.aborted) {
+          console.log(`[TTS Client CSS] Streaming process cancelled during audio processing at segment ${segmentIndex}`);
+          return;
+        }
         
         // Call onFirstChunk for the first segment
         if (!firstChunkProcessed) {
@@ -412,11 +457,14 @@ export async function processSegmentClientSideStreaming(
         segmentIndex++;
       }
       
-      console.log(`[TTS Client CSS] Streaming complete: total duration=${totalDuration}s, segments=${segmentIndex}`);
-      
-      // Notify that streaming is complete with the final duration
-      if (onStreamingComplete) {
-        onStreamingComplete(totalDuration);
+      // Only call completion callback if not cancelled
+      if (!abortController.signal.aborted) {
+        console.log(`[TTS Client CSS] Streaming complete: total duration=${totalDuration}s, segments=${segmentIndex}`);
+        
+        // Notify that streaming is complete with the final duration
+        if (onStreamingComplete) {
+          onStreamingComplete(totalDuration);
+        }
       }
     })();
     
@@ -426,6 +474,12 @@ export async function processSegmentClientSideStreaming(
     console.log(`[TTS Client CSS] Feeding ${tokens.length} tokens to splitter`);
     
     for (const token of tokens) {
+      // Check if cancelled before feeding more tokens
+      if (abortController.signal.aborted) {
+        console.log('[TTS Client CSS] Streaming process cancelled during token feeding');
+        return;
+      }
+      
       splitter.push(token);
       // Small delay to simulate streaming input (can be adjusted or removed)
       await new Promise(resolve => setTimeout(resolve, 1));
@@ -437,11 +491,23 @@ export async function processSegmentClientSideStreaming(
     // Wait for all audio processing to complete
     await streamProcessor;
     
-    // Wait for playback to complete
-    await waitForPlaybackCompletion();
+    // Wait for playback to complete (only if not cancelled)
+    if (!abortController.signal.aborted) {
+      await waitForPlaybackCompletion();
+    }
     
   } catch (error) {
-    console.error("[TTS Client CSS] Error in processSegmentClientSideStreaming:", error);
-    throw error;
+    // Don't log error if it's due to cancellation
+    if (abortController.signal.aborted) {
+      console.log('[TTS Client CSS] Streaming process was cancelled');
+    } else {
+      console.error("[TTS Client CSS] Error in processSegmentClientSideStreaming:", error);
+      throw error;
+    }
+  } finally {
+    // Clear the active controller if this is the current one
+    if (activeStreamingController === abortController) {
+      activeStreamingController = null;
+    }
   }
 }
