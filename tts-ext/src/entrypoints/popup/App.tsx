@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { Toggle } from "@/components/ui/toggle";
 import { Progress } from "@/components/ui/progress"; // Added import
+import Loader from "@/components/ui/Loader";
 import {
   // processSegment,
   stopSpeech,
@@ -36,6 +37,7 @@ function App() {
   // Model loading state
   const [loadingProgress, setLoadingProgress] = useState<number>(0); // New state for loading progress
   const [isModelReady, setIsModelReady] = useState<boolean>(false); // Track if model is loaded
+  const [isLoadingModel, setIsLoadingModel] = useState<boolean>(false); // Track if model is currently being loaded
   // state for voice selection, input text, and speaking status
   const [voice, setVoice] = useState<string>("af_sarah");
   // state for playback speed
@@ -48,23 +50,33 @@ function App() {
   // Set up progress callback for model loading
   useEffect(() => {
     // Check if model is already loaded
-    setIsModelReady(isModelLoaded());
-    setLoadingProgress(getCurrentProgress());
+    const modelLoaded = isModelLoaded();
+    const currentProgress = getCurrentProgress();
+    setIsModelReady(modelLoaded);
+    setLoadingProgress(currentProgress);
+    console.log("Initial model state:", { modelLoaded, progress: currentProgress });
 
-    // Set up progress callback
-    const progressCallback = (progress: number) => {
-      setLoadingProgress(progress);
-      if (progress === 100) {
-        setIsModelReady(true);
-      }
-    };
+    // Only set up progress callback if model is not already fully loaded
+    if (!modelLoaded || currentProgress < 100) {
+      // Set up progress callback
+      const progressCallback = (progress: number) => {
+        console.log("Progress callback:", progress);
+        setLoadingProgress(progress);
+        if (progress === 100) {
+          setIsModelReady(true);
+          console.log("Model loading complete");
+        }
+      };
 
-    addProgressCallback(progressCallback);
+      addProgressCallback(progressCallback);
 
-    // Cleanup callback on unmount
-    return () => {
-      removeProgressCallback(progressCallback);
-    };
+      // Cleanup callback on unmount
+      return () => {
+        removeProgressCallback(progressCallback);
+      };
+    } else {
+      console.log("Model already loaded, skipping progress callback setup");
+    }
   }, []);
 
   // load persisted voice on mount
@@ -194,6 +206,11 @@ function App() {
                     console.warn("No text provided");
                     return;
                   }
+                  
+                  // Always start loading indicator when processing starts
+                  setIsLoadingModel(true);
+                  console.log("Starting spinner - processing beginning");
+                  
                   setIsSpeaking(true);
                   setIsPaused(false);
                   // Stop any existing speech and streaming processes before starting new one
@@ -202,14 +219,18 @@ function App() {
                   
                   try {
                     // Process the full text directly - this will trigger model loading if needed
-                    await processSegmentClientSide(fullText, () => {
-                      // This callback is for the first chunk of audio data.
-                      console.log("First chunk of audio data received in App.");
+                    console.log("About to call processSegmentClientSide");
+                    await processSegmentClientSide(fullText, (actualDuration) => {
+                      // Audio generation is complete and playback is starting
+                      console.log("Audio generation complete and playback starting - hiding spinner");
+                      setIsLoadingModel(false);
                     });
+                    console.log("processSegmentClientSide completed");
                   } catch (e) {
                     console.error("Error processing text:", e);
                     setIsSpeaking(false);
                     setIsPaused(false);
+                    setIsLoadingModel(false);
                     return;
                   }
                   await waitForPlaybackCompletion();
@@ -241,10 +262,14 @@ function App() {
                 stopSpeech();
                 setIsSpeaking(false);
                 setIsPaused(false);
+                setIsLoadingModel(false); // Stop loading indicator
               }}
             >
               <StopCircle size={16} />
             </Button>
+            {isLoadingModel && (
+              <Loader className="h-6 w-6 my-0" />
+            )}
             <Toggle
               pressed={queueEnabled}
               onPressedChange={(next) => {
