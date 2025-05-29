@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/select";
 import { Toggle } from "@/components/ui/toggle";
 import { Progress } from "@/components/ui/progress"; // Added import
-import { splitTextForHybrid } from "@/lib/utilsText";
 import {
   // processSegment,
   stopSpeech,
@@ -221,19 +220,24 @@ function App() {
                   setIsSpeaking(true);
                   setIsPaused(false);
                   reset();
-                  const { firstSegment, secondSegment } =
-                    splitTextForHybrid(fullText);
+                  // const { firstSegment, secondSegment } =
+                  //   splitTextForHybrid(fullText); // Removed
                   try {
-                    // Original WebSocket version
-                    // await processSegment(firstSegment);
-                    // if (secondSegment) await processSegment(secondSegment);
-
-                    // Client-side version
-                    await processSegmentClientSide(firstSegment);
-                    if (secondSegment)
-                      await processSegmentClientSide(secondSegment);
+                    // Process the full text directly
+                    await processSegmentClientSide(fullText, () => {
+                      // This callback is for the first chunk of audio data.
+                      // In the App component, we don't have the same detailed progress UI as Overlay,
+                      // so this might be a no-op or used for simpler feedback if needed.
+                      console.log("First chunk of audio data received in App.");
+                    });
+                    // if (secondSegment) { // Removed
+                    //   await processSegmentClientSide(secondSegment);
+                    // }
                   } catch (e) {
-                    console.error("Error processing segments:", e);
+                    console.error("Error processing text:", e);
+                    setIsSpeaking(false);
+                    setIsPaused(false);
+                    return;
                   }
                   await waitForPlaybackCompletion();
                   setIsSpeaking(false);

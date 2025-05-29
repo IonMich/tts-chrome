@@ -195,7 +195,7 @@ export function setKokoroInstance(instance: any) {
 
 export async function processSegmentClientSide(
   segmentText: string,
-  onFirstChunk?: () => void
+  onFirstChunk?: (actualDuration?: number) => void
 ): Promise<void> {
   if (!kokoroInstance) {
     console.error("[TTS Client CS] processSegment: Kokoro instance not set.");
@@ -213,7 +213,7 @@ export async function processSegmentClientSide(
     const arrayBuffer = await audioBlob.arrayBuffer();
     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
     
-    if (onFirstChunk) onFirstChunk();
+    if (onFirstChunk) onFirstChunk(audioBuffer.duration);
 
     if (nextTime! < audioContext.currentTime) nextTime = audioContext.currentTime;
     const source = audioContext.createBufferSource();
@@ -333,4 +333,115 @@ export async function waitForPlaybackCompletion(): Promise<void> {
     }
     check()
   })
+}
+
+export async function processSegmentClientSideStreaming(
+  segmentText: string,
+  onFirstChunk?: (actualDuration?: number) => void,
+  onProgress?: (progress: { processedText: string, totalProcessed: number, estimatedTotal: number }) => void,
+  onStreamingComplete?: (finalDuration: number) => void
+): Promise<void> {
+  if (!kokoroInstance) {
+    console.error("[TTS Client CSS] processSegmentStreaming: Kokoro instance not set.");
+    throw new Error("Kokoro instance not set. TTS operations cannot proceed.");
+  }
+
+  try {
+    if (audioContext.state === "suspended") await audioContext.resume();
+    if (nextTime === null) nextTime = audioContext.currentTime;
+
+    console.log(`[TTS Client CSS] processSegmentStreaming started for text length ${segmentText.length}`);
+
+    // Import TextSplitterStream from kokoro-js
+    const { TextSplitterStream } = await import('kokoro-js');
+    
+    // Set up the streaming components with voice and speed
+    const splitter = new TextSplitterStream();
+    const stream = kokoroInstance.stream(splitter, { voice: currentVoice, speed: currentSpeed });
+    
+    let firstChunkProcessed = false;
+    let totalDuration = 0;
+    let processedCharacters = 0;
+    const totalCharacters = segmentText.length;
+    
+    // Process the audio stream
+    const streamProcessor = (async () => {
+      let segmentIndex = 0;
+      for await (const { text, phonemes, audio } of stream) {
+        console.log(`[TTS Client CSS] Processing segment ${segmentIndex}: "${text.substring(0, 50)}..."`);
+        
+        // Convert audio to AudioBuffer using the current voice and speed
+        const audioBlob = audio.toBlob();
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        
+        // Call onFirstChunk for the first segment
+        if (!firstChunkProcessed) {
+          firstChunkProcessed = true;
+          if (onFirstChunk) {
+            // For streaming, pass the duration of the first chunk as initial estimate
+            onFirstChunk(audioBuffer.duration);
+          }
+        }
+        
+        // Schedule audio playback
+        if (nextTime! < audioContext.currentTime) nextTime = audioContext.currentTime;
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(gainNode);
+        source.start(nextTime!);
+
+        activeSources.push(source);
+        source.onended = () => {
+          activeSources = activeSources.filter(s => s !== source);
+        };
+        nextTime! += audioBuffer.duration;
+        totalDuration += audioBuffer.duration;
+        
+        // Update progress
+        processedCharacters += text.length;
+        if (onProgress) {
+          onProgress({
+            processedText: text,
+            totalProcessed: processedCharacters,
+            estimatedTotal: totalCharacters
+          });
+        }
+        
+        console.log(`[TTS Client CSS] Segment ${segmentIndex} scheduled: duration=${audioBuffer.duration}s, total=${totalDuration}s`);
+        segmentIndex++;
+      }
+      
+      console.log(`[TTS Client CSS] Streaming complete: total duration=${totalDuration}s, segments=${segmentIndex}`);
+      
+      // Notify that streaming is complete with the final duration
+      if (onStreamingComplete) {
+        onStreamingComplete(totalDuration);
+      }
+    })();
+    
+    // Feed text to the splitter
+    // Split text into tokens (words) for gradual feeding
+    const tokens = segmentText.match(/\s*\S+/g) || [];
+    console.log(`[TTS Client CSS] Feeding ${tokens.length} tokens to splitter`);
+    
+    for (const token of tokens) {
+      splitter.push(token);
+      // Small delay to simulate streaming input (can be adjusted or removed)
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    
+    // Close the splitter to signal end of input
+    splitter.close();
+    
+    // Wait for all audio processing to complete
+    await streamProcessor;
+    
+    // Wait for playback to complete
+    await waitForPlaybackCompletion();
+    
+  } catch (error) {
+    console.error("[TTS Client CSS] Error in processSegmentClientSideStreaming:", error);
+    throw error;
+  }
 }
