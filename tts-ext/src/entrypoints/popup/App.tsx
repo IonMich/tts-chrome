@@ -23,26 +23,19 @@ import {
   setCurrentVoice,
   setCurrentSpeed,
   audioContext,
-  setKokoroInstance, // Import setKokoroInstance
   processSegmentClientSide, // Import client-side function
 } from "@/lib/ttsClient";
-import { detectWebGPU } from "@/lib/utils";
-import { env, KokoroTTS } from "kokoro-js";
-import { env as trEnv } from "@huggingface/transformers";
-
-env.wasmPaths = {
-  wasm: chrome.runtime.getURL("onnx/ort-wasm-simd-threaded.jsep.wasm"),
-  mjs: chrome.runtime.getURL("onnx/ort-wasm-simd-threaded.jsep.mjs"),
-};
-
-// trEnv.localModelPath = chrome.runtime.getURL("models"); // Optional
-// trEnv.allowRemoteModels = false;
-trEnv.allowLocalModels = true;
+import { 
+  addProgressCallback, 
+  removeProgressCallback, 
+  getCurrentProgress, 
+  isModelLoaded 
+} from "@/lib/modelLoader";
 
 function App() {
-  // kokoro-js model state
-  const [kokoro, setKokoro] = useState<any>(null);
+  // Model loading state
   const [loadingProgress, setLoadingProgress] = useState<number>(0); // New state for loading progress
+  const [isModelReady, setIsModelReady] = useState<boolean>(false); // Track if model is loaded
   // state for voice selection, input text, and speaking status
   const [voice, setVoice] = useState<string>("af_sarah");
   // state for playback speed
@@ -52,42 +45,26 @@ function App() {
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [queueEnabled, setQueueEnabled] = useState<boolean>(true);
 
-  let device: "webgpu" | "cpu" = "webgpu";
-
-  // load kokoro-js model once on mount
+  // Set up progress callback for model loading
   useEffect(() => {
-    const modelId = "Kokoro-82M-v1.0-ONNX";
-    console.log("Initializing Kokoro model from", modelId);
-    // Check if WebGPU is available
-    detectWebGPU().then((isAvailable) => {
-      device = isAvailable ? "webgpu" : "cpu";
-      console.log("WebGPU available:", isAvailable);
-      if (!isAvailable) {
-        console.warn("WebGPU not available, falling back to CPU");
+    // Check if model is already loaded
+    setIsModelReady(isModelLoaded());
+    setLoadingProgress(getCurrentProgress());
+
+    // Set up progress callback
+    const progressCallback = (progress: number) => {
+      setLoadingProgress(progress);
+      if (progress === 100) {
+        setIsModelReady(true);
       }
-      // Load the Kokoro model
-      console.log("Loading Kokoro model...");
-      KokoroTTS.from_pretrained(modelId, {
-        dtype: device === "webgpu" ? "fp32" : "q8",
-        device: device,
-        progress_callback: (progressInfo) => {
-          if (progressInfo.status === "progress") {
-            setLoadingProgress(progressInfo.progress); // Update loading progress state
-          }
-        },
-      })
-        .then((model) => {
-          console.log("Kokoro model loaded");
-          setKokoro(model);
-          setKokoroInstance(model); // Set kokoro instance in ttsClient
-        })
-        .catch((err) => {
-          console.error("Failed to load Kokoro model:", err);
-          alert(
-            "Failed to load Kokoro model. Please check the console for details."
-          );
-        });
-    });
+    };
+
+    addProgressCallback(progressCallback);
+
+    // Cleanup callback on unmount
+    return () => {
+      removeProgressCallback(progressCallback);
+    };
   }, []);
 
   // load persisted voice on mount
@@ -122,15 +99,14 @@ function App() {
       <div className="flex items-center justify-center m-4 p-4">
         <h2 className="text-xl font-medium">TTS Converter</h2>
       </div>
-      {!kokoro && ( // Display progress bar if kokoro model is not loaded
+      {loadingProgress > 0 && loadingProgress < 100 && ( // Display progress bar only when actively loading
         <div className="p-4">
           <Label>Loading Model...</Label>
           <Progress value={loadingProgress} className="w-full" />
         </div>
       )}
-      {kokoro && ( // Display UI elements only if kokoro model is loaded
-        <>
-          <div className="mb-4 flex gap-8">
+      {/* Always display UI elements - model will load when needed */}
+      <div className="mb-4 flex gap-8">
             <Label htmlFor="voiceSelect">Voice</Label>
             <Select
               value={voice}
@@ -209,6 +185,7 @@ function App() {
             <Button
               variant="default"
               size="sm"
+              disabled={!inputText.trim() && !isSpeaking}
               onClick={async () => {
                 if (!isSpeaking) {
                   // start playback
@@ -222,19 +199,13 @@ function App() {
                   // Stop any existing speech and streaming processes before starting new one
                   stopSpeech();
                   reset();
-                  // const { firstSegment, secondSegment } =
-                  //   splitTextForHybrid(fullText); // Removed
+                  
                   try {
-                    // Process the full text directly
+                    // Process the full text directly - this will trigger model loading if needed
                     await processSegmentClientSide(fullText, () => {
                       // This callback is for the first chunk of audio data.
-                      // In the App component, we don't have the same detailed progress UI as Overlay,
-                      // so this might be a no-op or used for simpler feedback if needed.
                       console.log("First chunk of audio data received in App.");
                     });
-                    // if (secondSegment) { // Removed
-                    //   await processSegmentClientSide(secondSegment);
-                    // }
                   } catch (e) {
                     console.error("Error processing text:", e);
                     setIsSpeaking(false);
@@ -308,8 +279,6 @@ function App() {
               <Eraser size={16} />
             </Button>
           </div>
-        </>
-      )}
     </Card>
   );
 }

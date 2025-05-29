@@ -186,6 +186,7 @@ export async function preloadText(
 }
 
 // Kokoro-JS client-side TTS processing
+import { ensureModelLoaded } from '@/lib/modelLoader';
 let kokoroInstance: any = null;
 // Track active streaming process for cancellation
 let activeStreamingController: AbortController | null = null;
@@ -199,11 +200,8 @@ export async function processSegmentClientSide(
   segmentText: string,
   onFirstChunk?: (actualDuration?: number) => void
 ): Promise<void> {
-  if (!kokoroInstance) {
-    console.error("[TTS Client CS] processSegment: Kokoro instance not set.");
-    throw new Error("Kokoro instance not set. TTS operations cannot proceed.");
-  }
-  const activeKokoroInstance = kokoroInstance;
+  // Ensure model is loaded before processing
+  const activeKokoroInstance = await ensureModelLoaded();
 
   try {
     if (audioContext.state === "suspended") await audioContext.resume();
@@ -240,13 +238,10 @@ export async function processSegmentClientSide(
 export async function preloadTextClientSide(
   text: string,
   voice: string,
-  speed: number
+    speed: number
 ): Promise<void> {
-  if (!kokoroInstance) {
-    console.error(`[TTS Client CS] preloadText: Kokoro instance not set for key ${text}|${voice}|${speed}|clientside.`);
-    throw new Error("Kokoro instance not set. TTS preload operations cannot proceed.");
-  }
-  const activeKokoroInstance = kokoroInstance;
+  // Ensure model is loaded before preloading
+  const activeKokoroInstance = await ensureModelLoaded();
   const key = `${text}|${voice}|${speed}|clientside`;
 
   try {
@@ -364,10 +359,8 @@ export async function processSegmentClientSideStreaming(
   onProgress?: (progress: { processedText: string, totalProcessed: number, estimatedTotal: number }) => void,
   onStreamingComplete?: (finalDuration: number) => void
 ): Promise<void> {
-  if (!kokoroInstance) {
-    console.error("[TTS Client CSS] processSegmentStreaming: Kokoro instance not set.");
-    throw new Error("Kokoro instance not set. TTS operations cannot proceed.");
-  }
+  // Ensure model is loaded before processing
+  const activeKokoroInstance = await ensureModelLoaded();
 
   // Cancel any existing streaming process
   if (activeStreamingController) {
@@ -390,7 +383,7 @@ export async function processSegmentClientSideStreaming(
     
     // Set up the streaming components with voice and speed
     const splitter = new TextSplitterStream();
-    const stream = kokoroInstance.stream(splitter, { voice: currentVoice, speed: currentSpeed });
+    const stream = activeKokoroInstance.stream(splitter, { voice: currentVoice, speed: currentSpeed });
     
     let firstChunkProcessed = false;
     let totalDuration = 0;

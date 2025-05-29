@@ -6,7 +6,6 @@ import Loader from "@/components/ui/Loader";
 import { Play, Pause, StopCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  processSegmentClientSide, // Import processSegmentClientSide
   processSegmentClientSideStreaming, // Import streaming version
   stopSpeech,
   reset,
