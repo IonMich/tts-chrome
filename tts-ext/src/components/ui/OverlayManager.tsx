@@ -49,31 +49,19 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
   useEffect(() => {
     const listener = (message: any) => {
       if (message.action === "readText" && message.text) {
-        console.log(
-          "[OverlayManager] received TTS request:",
-          message.text,
-          message.voice,
-          message.speed
-        );
         const req: Request = {
           text: message.text,
           voice: message.voice,
           speed: message.speed,
         };
         if (!currentRef.current) {
-          console.log("[OverlayManager] starting immediately:", req.text);
           currentRef.current = req;
           setQueue([]);
           setCurrent(req);
           setCurrentKey((k) => k + 1);
         } else if (queueEnabledRef.current) {
-          console.log("[OverlayManager] queuing request:", req.text);
           setQueue((q) => [...q, req]);
         } else {
-          console.log(
-            "[OverlayManager] replacing current, interrupting playback:",
-            req.text
-          );
           stopSpeech();
           currentRef.current = null;
           setQueue([]);
@@ -98,50 +86,32 @@ const OverlayManager: React.FC<{ host: HTMLElement }> = ({ host }) => {
   // Preload only the next item in queue when current item finishes processing
   const preloadNext = useCallback(() => {
     const currentQueue = queueRef.current;
-    console.log(`[OverlayManager] preloadNext called, queue length: ${currentQueue.length} (state: ${queue.length})`);
-    // We need to preload the item that will be next AFTER the current queue advancement
-    // When onProcessingComplete is called, the queue hasn't been advanced yet
-    // So if currentQueue.length > 1, we want to preload currentQueue[1] (the item after the next one)
-    // But for a single item queue (length 1), we want to preload currentQueue[0]
     if (currentQueue.length > 0) {
       const indexToPreload = currentQueue.length > 1 ? 1 : 0;
       const nextReq = currentQueue[indexToPreload];
       const key = `${nextReq.text}|${nextReq.voice}|${nextReq.speed}|clientside`;
-      console.log(`[OverlayManager] Preloading item at index ${indexToPreload}: ${nextReq.text.substring(0, 50)}...`);
-      
       if (!preloadedSegments[key] && !loadedKeys.has(key)) {
-        console.log(`[OverlayManager] Starting preload for index ${indexToPreload}: ${nextReq.text.substring(0, 50)}...`);
         preloadTextClientSide(nextReq.text, nextReq.voice, nextReq.speed)
           .then(() => {
-            console.log(`[OverlayManager] Preload completed for index ${indexToPreload}: ${nextReq.text.substring(0, 50)}...`);
             setLoadedKeys((prev) => new Set(prev).add(key));
           })
           .catch(console.error);
       } else if (preloadedSegments[key] && !loadedKeys.has(key)) {
-        console.log(`[OverlayManager] Preload already complete for index ${indexToPreload}: ${nextReq.text.substring(0, 50)}...`);
         setLoadedKeys((prev) => new Set(prev).add(key));
       }
-    } else {
-      console.log(`[OverlayManager] preloadNext called but queue is empty`);
     }
   }, [loadedKeys]);
 
   const handleClose = useCallback(() => {
-    console.log(
-      "[OverlayManager] onClose called, stopping previous playback and advancing:",
-      currentRef.current?.text
-    );
     // stop any lingering audio before starting next
     stopSpeech();
     if (queueRef.current.length > 0) {
       const [next, ...rest] = queueRef.current;
-      console.log("[OverlayManager] advancing to next in queue:", next.text);
       setQueue(rest);
       currentRef.current = next;
       setCurrent(next);
       setCurrentKey((k) => k + 1);
     } else {
-      console.log("[OverlayManager] queue empty, hiding overlay");
       currentRef.current = null;
       setCurrent(null);
     }

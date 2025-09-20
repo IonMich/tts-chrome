@@ -1,5 +1,3 @@
-import { ensureModelLoaded } from "@/lib/modelLoader";
-
 export default defineBackground(() => {
   // Create context menu item on install
   chrome.runtime.onInstalled.addListener(() => {
@@ -8,13 +6,11 @@ export default defineBackground(() => {
       title: "Read Text",
       contexts: ["selection"],
     });
-    console.log("[Background] Context menu created/updated.");
   });
 
   // Handle context menu click
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === "readText" && info.selectionText) {
-      console.log(`[Background] Context menu 'readText' clicked.`);
       chrome.tabs
         .query({ active: true, currentWindow: true })
         .then((tabs) => {
@@ -41,13 +37,6 @@ export default defineBackground(() => {
           )
         );
     }
-  });
-
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action !== "loadModel") return;
-    console.log("[Background] Received message to load model:", message);
-    
-    return true; // Keep the message channel open for sendResponse
   });
 
   // Handle keyboard command

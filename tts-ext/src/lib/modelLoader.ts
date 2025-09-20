@@ -91,15 +91,13 @@ export function isModelLoaded(): boolean {
  * If the model is already loaded or loading, returns the existing promise/instance.
  */
 export async function ensureModelLoaded(): Promise<any> {
-  // If already loaded, return immediately without triggering any callbacks
+  // If already loaded, return immediately
   if (loadedModel) {
-    console.log('[ModelLoader] Model already loaded, returning existing instance');
     return loadedModel;
   }
 
   // If already loading, return the existing promise
   if (modelLoadingPromise) {
-    console.log('[ModelLoader] Model already loading, returning existing promise');
     return modelLoadingPromise;
   }
 
@@ -141,24 +139,17 @@ export async function ensureModelLoaded(): Promise<any> {
         dtype: device === "webgpu" ? "fp32" : "q8",
         device: device,
       };
-      
+
       // Only add progress callback if we have registered callbacks
       if (progressCallbacks.length > 0) {
         modelOptions.progress_callback = (progressInfo: any) => {
-          // Only process progress callbacks if we're actively loading
           if (progressInfo.status === "progress" && isActivelyLoading) {
             const newProgress = progressInfo.progress;
-            
-            // Yield control back to browser after each progress update to maintain animations
             setTimeout(() => {
-              // Only update and notify if progress actually changed
               if (newProgress !== loadingProgress) {
                 loadingProgress = newProgress;
                 progressCallbacks.forEach(callback => callback(loadingProgress));
-                console.log(`${context} Model loading progress:`, loadingProgress);
               }
-              
-              // Mark completion notification as sent when we reach 100%
               if (newProgress === 100) {
                 hasNotifiedCompletion = true;
               }
@@ -166,33 +157,33 @@ export async function ensureModelLoaded(): Promise<any> {
           }
         };
       }
-      
+
       const model = await KokoroTTS.from_pretrained(modelId, modelOptions);
 
-      console.log(`${context} Kokoro model loaded successfully`);
+      console.log('TTS model loaded successfully');
       loadedModel = model;
       setKokoroInstance(model);
-      isActivelyLoading = false; // Mark as no longer actively loading
-      
+      isActivelyLoading = false;
+
       // Set progress to 100% and notify callbacks only if we haven't already notified
       if (loadingProgress < 100 && !hasNotifiedCompletion) {
         loadingProgress = 100;
         hasNotifiedCompletion = true;
         progressCallbacks.forEach(callback => callback(100));
-        console.log(`${context} Final progress update: 100%`);
       }
-      
+
       return model;
     } catch (err) {
-      console.error(`${context} Failed to load Kokoro model:`, err);
-      isActivelyLoading = false; // Reset loading flag on error
-      modelLoadingPromise = null; // Reset so loading can be retried
+      console.error('Failed to load TTS model:', err);
+      isActivelyLoading = false;
+      modelLoadingPromise = null;
       throw err;
     }
   })();
 
   return modelLoadingPromise;
 }
+
 
 /**
  * Reset the model state (for testing or re-initialization)

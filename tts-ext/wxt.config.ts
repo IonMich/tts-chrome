@@ -9,7 +9,7 @@ export default defineConfig({
     name: 'TTS Extension',
     version: '1.0',
     description: 'A simple text-to-speech extension for Chrome.',
-    permissions: ['activeTab', 'scripting', 'contextMenus', 'storage'],
+    permissions: ['activeTab', 'scripting', 'contextMenus', 'storage', 'tabs'],
     host_permissions: ['*://*/*pdf*'],
     content_scripts: [
       {
@@ -34,6 +34,9 @@ export default defineConfig({
         ],
         matches: ["<all_urls>"] // Or more restrictive if appropriate
       }
-    ]
+    ],
+    content_security_policy: {
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+    }
   }
 });
