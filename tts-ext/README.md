@@ -8,6 +8,10 @@ A React & Tailwind CSS Chrome extension built with [WXT](https://github.com/wxt-
 - React UI with Tailwind CSS components
 - Hot‑reload development with WXT
 - Build and package for Chrome & Firefox
+- **Text-to-Speech for selected text**: Right-click selected text or use `Ctrl+Shift+S` / `Cmd+Shift+S`
+- **Whole page TTS**: Convert entire web pages to audio with `Ctrl+Shift+P` / `Cmd+Shift+P`
+- Smart content extraction that filters out navigation, ads, and focuses on main article content
+- Queue system for managing multiple TTS requests
 
 ## Prerequisites
 
@@ -46,6 +50,22 @@ npm run dev:firefox  # Firefox
    ```
 
 Generated packages are in `dist/`.
+
+## Usage
+
+### Keyboard Shortcuts
+- **`Ctrl+Shift+S` / `Cmd+Shift+S`**: Convert selected text to speech
+- **`Ctrl+Shift+P` / `Cmd+Shift+P`**: Convert entire page to speech
+
+### Context Menu
+- Right-click on selected text and choose "Read Text"
+
+### Smart Page Content Detection
+The whole page TTS feature intelligently extracts content by:
+- Prioritizing main content areas (`article`, `main`, `.content`)
+- Including page titles from heading elements (`h1`, `h2`, `h3`)
+- Filtering out navigation, headers, footers, ads, and sidebar content
+- Falling back to document title if no heading is found
 
 ## Configuration
 

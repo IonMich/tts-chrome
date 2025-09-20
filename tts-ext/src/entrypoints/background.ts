@@ -9,7 +9,7 @@ export default defineBackground(() => {
   });
 
   // Handle context menu click
-  chrome.contextMenus.onClicked.addListener((info, tab) => {
+  chrome.contextMenus.onClicked.addListener((info) => {
     if (info.menuItemId === "readText" && info.selectionText) {
       chrome.tabs
         .query({ active: true, currentWindow: true })
