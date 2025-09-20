@@ -23,6 +23,10 @@ export default defineConfig({
       trigger_tts: {
         suggested_key: { default: 'Ctrl+Shift+S', mac: 'Command+Shift+S' },
         description: 'Trigger TTS for selected text'
+      },
+      trigger_page_tts: {
+        suggested_key: { default: 'Ctrl+Shift+P', mac: 'Command+Shift+P' },
+        description: 'Trigger TTS for entire page'
       }
     },
     web_accessible_resources: [

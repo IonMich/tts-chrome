@@ -3,6 +3,143 @@ export function getWords(text: string): string[] {
   return text.trim().split(/\s+/)
 }
 
+export function extractPageText(): string {
+  // Priority selectors for main content
+  const mainContentSelectors = [
+    'article',
+    'main',
+    '[role="main"]',
+    '.content',
+    '#content',
+    '.post-content',
+    '.entry-content',
+    '.article-content',
+    '.page-content'
+  ];
+
+  // Elements to exclude
+  const excludeSelectors = [
+    'nav',
+    'header',
+    'footer',
+    'aside',
+    '.sidebar',
+    '.advertisement',
+    '.ads',
+    '.social',
+    '.share',
+    '.comments',
+    '.related',
+    '.navigation',
+    'script',
+    'style',
+    'noscript'
+  ];
+
+  // First, try to collect title from common heading selectors
+  let title = '';
+  const titleSelectors = ['h1', 'h2', 'h3', '.title', '.post-title', '.entry-title', '.article-title', '.entry-header h1', '.entry-header h2'];
+
+  for (const selector of titleSelectors) {
+    const titleElement = document.querySelector(selector);
+    if (titleElement && !isElementExcluded(titleElement, excludeSelectors)) {
+      const titleText = titleElement.textContent?.trim();
+      if (titleText && titleText.length > 3 && titleText.length < 200) {
+        title = titleText;
+        break;
+      }
+    }
+  }
+
+  // Fallback: try document.title if no heading found
+  if (!title && document.title) {
+    const docTitle = document.title.trim();
+    if (docTitle.length > 3 && docTitle.length < 200) {
+      title = docTitle;
+    }
+  }
+
+  // Try to find main content using priority selectors
+  let mainContent = '';
+  for (const selector of mainContentSelectors) {
+    const element = document.querySelector(selector);
+    if (element) {
+      const text = extractTextFromElement(element, excludeSelectors);
+      if (text.trim().length > 100) { // Only use if substantial content
+        mainContent = text;
+        break;
+      }
+    }
+  }
+
+  // If no main content found, fallback to body
+  if (!mainContent) {
+    mainContent = extractTextFromElement(document.body, excludeSelectors);
+  }
+
+  // Combine title and content, avoiding duplication
+  if (title && mainContent) {
+    // Check if title is already at the beginning of main content
+    if (mainContent.toLowerCase().startsWith(title.toLowerCase())) {
+      return mainContent;
+    } else {
+      return `${title}. ${mainContent}`;
+    }
+  }
+
+  return mainContent || title;
+}
+
+function isElementExcluded(element: Element, excludeSelectors: string[]): boolean {
+  let parent = element;
+  while (parent) {
+    if (excludeSelectors.some(selector => parent.matches(selector))) {
+      return true;
+    }
+    parent = parent.parentElement as Element;
+  }
+  return false;
+}
+
+function extractTextFromElement(element: Element, excludeSelectors: string[]): string {
+  const walker = document.createTreeWalker(
+    element,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        // Skip if parent element matches exclude selectors
+        let parent = node.parentElement;
+        while (parent) {
+          if (excludeSelectors.some(selector => parent?.matches(selector))) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          parent = parent.parentElement;
+        }
+
+        // Skip empty or whitespace-only text
+        const text = node.textContent?.trim();
+        if (!text || text.length < 3) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  const textParts: string[] = [];
+  let node;
+
+  while (node = walker.nextNode()) {
+    const text = node.textContent?.trim();
+    if (text) {
+      textParts.push(text);
+    }
+  }
+
+  return textParts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 export function splitTextForHybrid(
   fullText: string,
   targetWordsInFirstSegment = 30,
