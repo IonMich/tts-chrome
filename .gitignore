@@ -11,6 +11,5 @@ wheels/
 
 **/.DS_Store
 
-# TTS model and voice binaries
-kokoro-v1.0.onnx
-voices-v1.0.bin
+tts-ext/src/public/models/Kokoro-82M-v1.0-ONNX/onnx/model.onnx
+tts-ext/src/public/onnx/ort-wasm-simd-threaded.jsep.wasm
