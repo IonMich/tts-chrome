@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ReaderPlayer } from '@/components/reader/ReaderPlayer';
 import { getVoiceCatalog, pauseReader, seekReader, setReaderSpeed, readCurrentPage, resumeReader, startReader, stopReader, subscribeReader, showReaderPlayer } from '@/lib/readerClient';
-import { idleSnapshot, isCurrentSnapshot, macVoiceId, macVoiceValue, VOICES, type MacVoice, type ReaderSnapshot, type ReaderLaunchResult, type ReaderPhase } from '@/lib/readerProtocol';
+import { idleSnapshot, isCurrentSnapshot, macVoiceId, macVoiceValue, VOICES, type MacVoice, type ReaderSnapshot, type ReaderLaunchResult } from '@/lib/readerProtocol';
 import '@/components/reader/reader.css';
 
 const voiceLabel = (voice: string) => `${voice.slice(3).replace(/^./, s => s.toUpperCase())} · ${voice[0] === 'b' ? 'British' : 'American'}`;
-const phaseLabel: Record<ReaderPhase, string> = { idle: 'Ready to read', installing: 'Setting up voice', preparing: 'Preparing speech', buffering: 'Buffering', playing: 'Reading aloud', paused: 'Paused', complete: 'Finished reading', error: 'Reading interrupted' };
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<ReaderSnapshot>(idleSnapshot);
@@ -68,18 +67,9 @@ export default function App() {
     <h1>Read aloud</h1>
     <p className="reader-menu__intro">A small player, only when you ask for it.</p>
     {snapshot.phase !== 'idle' && <section className="reader-menu__session" aria-label="Current reading">
-      {snapshot.pagePlayerAvailable === false ? <>
-        <p className="reader-menu__small">This page does not allow an in-page player. Control this reading here.</p>
-        <ReaderPlayer state={snapshot} onPause={() => control(()=>pauseReader(snapshot.sessionId))} onResume={() => control(()=>resumeReader(snapshot.sessionId))} onClose={() => void run(stopReader)} onSeek={s=>control(()=>seekReader(s,snapshot.sessionId))} onSpeed={s=>void run(()=>setReaderSpeed(s))} />
-      </> : <>
-        <p className="reader-menu__session-status" role="status">{phaseLabel[snapshot.phase]}</p>
-        <p className="reader-menu__small">Playback controls are on the reading page.</p>
-        <div className="reader-menu__session-actions">
-          <button className="reader-menu__secondary" disabled={pending} onClick={() => void run(async () => finishLaunch(await showReaderPlayer()))}>Show page player</button>
-          <button className="reader-menu__secondary" disabled={pending} onClick={() => void run(stopReader)}>Stop</button>
-        </div>
-        {snapshot.error && <p className="reader-menu__error" role="alert">{snapshot.error}</p>}
-      </>}
+      {snapshot.pagePlayerAvailable === false && <p className="reader-menu__small">This page does not allow an in-page player. Control this reading here.</p>}
+      <ReaderPlayer state={snapshot} onPause={() => control(()=>pauseReader(snapshot.sessionId))} onResume={() => control(()=>resumeReader(snapshot.sessionId))} onClose={() => void run(stopReader)} onSeek={s=>control(()=>seekReader(s,snapshot.sessionId))} onSpeed={s=>void run(()=>setReaderSpeed(s))} />
+      {snapshot.pagePlayerAvailable !== false && <button className="reader-menu__secondary" disabled={pending} onClick={() => void run(async () => finishLaunch(await showReaderPlayer()))}>Show page player</button>}
     </section>}
     <button className="reader-menu__primary" disabled={!canStart} onClick={() => void readPage(true)}>Read selected text</button>
     <button className="reader-menu__secondary" disabled={!canStart} onClick={() => void readPage(false)}>Read this page</button>

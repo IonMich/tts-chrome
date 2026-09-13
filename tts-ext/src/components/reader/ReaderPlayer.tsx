@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { ReaderScrubber, type ScrubCommandResult, type ScrubView } from '@/lib/readerScrubber';
 import { AudioLines, ChevronDown, LoaderCircle, Pause, Play, RotateCcw, RotateCw, Square, X } from 'lucide-react';
 import './reader.css';
+import { highlightDescription, type SpokenPosition } from '@/lib/speechPosition';
 export type PlayerPhase = 'idle'|'installing'|'preparing'|'buffering'|'playing'|'paused'|'complete'|'error';
-export interface PlayerState { phase:PlayerPhase; elapsedSec:number; durationSec:number|null; bufferedSec:number; seekableStartSec?:number; seekableEndSec?:number; replayExpiresAt?:number; progress?:number; message?:string; error?:string; voice:string; voiceName?:string; speed:number; speechMode?:'system'; sessionId?:string; revision?:number; }
+export interface PlayerState { phase:PlayerPhase; elapsedSec:number; durationSec:number|null; bufferedSec:number; seekableStartSec?:number; seekableEndSec?:number; replayExpiresAt?:number; progress?:number; message?:string; error?:string; voice:string; voiceName?:string; speed:number; speechMode?:'system'; stopping?:boolean; stopReason?:'user'; spokenPosition?:SpokenPosition; sessionId?:string; revision?:number; }
 type PlayerCommand = () => ScrubCommandResult | Promise<ScrubCommandResult>;
 export interface ReaderPlayerProps { state:PlayerState; onPause:PlayerCommand; onResume:PlayerCommand; onClose:()=>void; onSeek?:(seconds:number)=>ScrubCommandResult|Promise<ScrubCommandResult>; onSpeed?:(speed:number)=>void; onReplay?:()=>void; floating?:boolean; }
 const labels:Record<PlayerPhase,string>={idle:'Ready to read',installing:'Setting up voice',preparing:'Preparing speech',buffering:'Buffering',playing:'Reading aloud',paused:'Paused',complete:'Finished reading',error:'Reading interrupted'};
@@ -24,6 +25,20 @@ export function ReaderPlayer({state,onPause,onResume,onClose,onSeek,onSpeed,onRe
  const seek=(value:number)=>scrub.seek(value);
  const control=(action:PlayerCommand)=>{void Promise.resolve().then(action).catch(()=>{});};
  const busy=['preparing','installing','buffering'].includes(state.phase);
+ if(system){
+  const canStop=['preparing','installing','buffering','playing'].includes(state.phase);
+  const stopped=state.phase==='complete'&&state.stopReason==='user';
+  const title=state.stopping?'Stopping…':stopped?'Stopped':labels[state.phase];
+  return <section className={`reader-player reader-player--system${floating?' reader-player--floating':''}`} aria-label="Reading player" data-phase={state.phase}>
+   <div className="reader-player__heading"><span className="reader-player__title" role="status" aria-live="polite">{title}</span><button className="reader-player__icon" aria-label={expanded?'Hide reading details':'Show reading details'} aria-expanded={expanded} onClick={()=>setExpanded(v=>!v)}><ChevronDown size={16} className={expanded?'reader-chevron-up':''}/></button><button className="reader-player__icon" aria-label="Close player and stop reading" onClick={onClose}><X size={16}/></button></div>
+   <div className="reader-player__native">
+    <div className="reader-player__voice"><AudioLines size={20} aria-hidden="true"/><div><strong>Mac voice</strong><span>System Start Speaking setting</span></div></div>
+    {canStop?<button className="reader-player__native-action" disabled={state.stopping} onClick={()=>control(onPause)}>{state.stopping?<LoaderCircle className="reader-spin" size={16} aria-hidden="true"/>:<Square size={14} fill="currentColor" aria-hidden="true"/>}{state.stopping?'Stopping…':'Stop reading'}</button>:state.phase==='complete'?<button className="reader-player__native-action" onClick={()=>control(onResume)}><RotateCcw size={17} aria-hidden="true"/>Replay from beginning</button>:null}
+    <p className="reader-player__native-note">{state.phase==='complete'?(stopped?'Reading stopped. ':'')+'Replay reads the full passage again.':'Pause, seeking, speed and timing aren’t available for this Mac voice.'}</p>
+   </div>
+   {(expanded||state.phase==='error')&&<div className="reader-player__details">{state.phase==='error'?<p role="alert" className="reader-player__error">{state.error||'Reading could not continue.'}</p>:<p>{state.message||'This voice reads the whole passage using your Mac’s Start Speaking setting. Stop ends speech; replay starts from the beginning.'}</p>}<p className="reader-player__hint">{highlightDescription(state.spokenPosition)} Close clears this reading.</p></div>}
+  </section>;
+ }
  return <section className={`reader-player${floating?' reader-player--floating':''}`} aria-label="Reading player" data-phase={state.phase}>
   <div className="reader-player__heading"><span className="reader-player__title" role="status" aria-live="polite">{labels[state.phase]}</span>{!system&&<span className="reader-player__time"><time>{formatReaderTime(shown)}</time>{known&&<> / <time>{formatReaderTime(state.durationSec!)}</time></>}</span>}<button className="reader-player__icon" aria-label="Close player and stop reading" onClick={onClose}><X size={16}/></button></div>
   <div className="reader-player__controls">
@@ -42,6 +57,6 @@ export function ReaderPlayer({state,onPause,onResume,onClose,onSeek,onSpeed,onRe
     onBlur={()=>{if(scrub.pointerId!==null)scrub.cancel(scrub.pointerId);}}/>
    <div className="reader-player__range"><span>{state.replayExpiresAt?`Replay for ${formatReaderTime((state.replayExpiresAt-Date.now())/1000)}`:start>0?`From ${formatReaderTime(start)}`:seekable?'Audio available':busy?'Waiting for audio':'No audio retained'}</span><span>{seekable?`${formatReaderTime(end)}${known?'':' · growing'}`:state.phase==='installing'&&state.progress!==undefined?`${Math.round(state.progress)}%`:''}</span></div>
   </div>}
-  {(expanded||state.phase==='error')&&<div className="reader-player__details">{state.phase==='error'?<p role="alert" className="reader-player__error">{state.error||'Reading could not continue.'}</p>:<p>{state.message||(system?'The Mac voice follows your system Start Speaking setting.':state.phase==='buffering'?'You reached the available audio. Reading continues when more is ready.':state.phase==='complete'?'Replay the retained audio, or Close to release this session.':'Speed changes the current playback. Seeking stays within the audio already available.')}</p>}<p className="reader-player__hint">{state.voiceName||state.voice.replace(/^[a-z]{2}_/,'').replace(/_/g,' ')}{system?'':` · ${Math.round(state.bufferedSec)} s ahead${start>0?' · older audio released':''}`}. Close stops and clears the session.</p></div>}
+  {(expanded||state.phase==='error')&&<div className="reader-player__details">{state.phase==='error'?<p role="alert" className="reader-player__error">{state.error||'Reading could not continue.'}</p>:<p>{state.message||(system?'The Mac voice follows your system Start Speaking setting.':state.phase==='buffering'?'You reached the available audio. Reading continues when more is ready.':state.phase==='complete'?'Replay the retained audio, or Close to release this session.':'Speed changes the current playback. Seeking stays within the audio already available.')}</p>}<p className="reader-player__hint">{highlightDescription(state.spokenPosition)} </p><p className="reader-player__hint">{state.voiceName||state.voice.replace(/^[a-z]{2}_/,'').replace(/_/g,' ')}{system?'':` · ${Math.round(state.bufferedSec)} s ahead${start>0?' · older audio released':''}`}. Close stops and clears the session.</p></div>}
  </section>;
 }

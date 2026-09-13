@@ -2,7 +2,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import OverlayManager from '@/components/ui/OverlayManager';
 import '@/components/reader/reader.css';
-import { READER_CHANNEL } from '@/lib/readerProtocol';
+import { READER_CHANNEL, type ReaderSnapshot } from '@/lib/readerProtocol';
+import { captureReadingSource } from '@/lib/sourceText';
+import { SourceHighlight } from '@/lib/sourceHighlight';
 
 type PlayerUi = { mount: () => void; remove: () => void; shadowHost: HTMLElement };
 type ReaderWindow = Window & { __localReaderController?: { dispose: () => void } };
@@ -18,11 +20,14 @@ export default defineContentScript({
     // WXT invalidates the old context asynchronously on reinjection. Replace it
     // synchronously so the new explicit show always has a live listener.
     scope.__localReaderController?.dispose();
+    const highlight = new SourceHighlight(document);
+    let activeSessionId: string | undefined;
     let ui: PlayerUi | undefined;
     let generation = 0;
     let opening: Promise<void> | undefined;
     let previousFocus: Element | null = null;
     const dismiss = () => {
+      highlight.clear();
       generation++;
       opening = undefined;
       const ownedFocus = ui?.shadowHost === document.activeElement;
@@ -58,10 +63,22 @@ export default defineContentScript({
       try { await opening; if (moveFocus) focus(); }
       finally { if (request === generation) opening = undefined; }
     };
-    const listener = (message: { type?: string; focus?: boolean; channel?: string; action?: string; snapshot?: { phase?: string } }, sender: chrome.runtime.MessageSender, respond: (response: { shown: boolean }) => void) => {
+    const listener = (message: { type?: string; focus?: boolean; selectionOnly?: boolean; sessionId?: string; channel?: string; action?: string; snapshot?: ReaderSnapshot }, sender: chrome.runtime.MessageSender, respond: (response: object) => void) => {
       if (sender.id !== chrome.runtime.id) return;
-      if (message?.channel === READER_CHANNEL && message.action === 'state' && message.snapshot?.phase === 'idle') dismiss();
+      if (message?.channel === READER_CHANNEL && message.action === 'state' && message.snapshot) {
+        if (message.snapshot.phase === 'idle' && activeSessionId && message.snapshot.sessionId !== activeSessionId) return;
+        highlight.observe(message.snapshot);
+        if (message.snapshot.phase === 'idle') dismiss();
+      }
+      if (message?.type === 'reader:extract' && message.sessionId) {
+        activeSessionId = message.sessionId;
+        const source = captureReadingSource(document, !!message.selectionOnly, crypto.randomUUID());
+        highlight.prepare(source, message.sessionId);
+        respond({ text: source.text, ...(highlight.supported && source.runs.length ? { sourceId: source.sourceId } : {}) });
+        return;
+      }
       if (message?.type === 'reader:show') {
+        activeSessionId = message.sessionId;
         void show(message.focus !== false).then(() => respond({ shown: !!ui }), () => respond({ shown: false }));
         return true;
       }
@@ -70,6 +87,7 @@ export default defineContentScript({
     chrome.runtime.onMessage.addListener(listener);
     const controller = { dispose() {
       chrome.runtime.onMessage.removeListener(listener);
+      highlight.dispose();
       dismiss();
       if (scope.__localReaderController === controller) delete scope.__localReaderController;
     } };

@@ -103,7 +103,8 @@ try {
   await engine.resume();
   await waitFor(() => engine.snapshot.phase === 'playing', 'replay starts');
   await engine.pause(); // The system-speech UI labels this operation Stop.
-  assert.equal(engine.snapshot.phase, 'complete');
+  await waitFor(() => engine.snapshot.phase === 'complete', 'Stop acknowledgement');
+  assert.equal(engine.snapshot.stopReason, 'user');
   await waitFor(() => connections.every(c => c.closed), 'stopped helper exits');
   assert(events.some(e => e.type === 'cancelled'));
   await engine.start({ ...request, text: 'This reading will be replaced. '.repeat(10) }, 'old');

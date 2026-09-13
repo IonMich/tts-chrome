@@ -15,11 +15,12 @@ export default defineBackground(() => {
     void chrome.runtime.sendMessage({ channel: READER_CHANNEL, target: 'engine', action: 'native-message', message }).catch(() => {});
   });
   async function publish(next: ReaderSnapshot) {
-    snapshot = { ...next, pagePlayerAvailable };
+    const published = { ...next, pagePlayerAvailable };
+    snapshot = published;
     await chrome.storage.session.set({ readerSnapshot: snapshot, readerOwnerTab: ownerTab ?? null });
-    const message = { channel: READER_CHANNEL, action: 'state', snapshot };
+    const message = { channel: READER_CHANNEL, action: 'state', snapshot: published };
     void chrome.runtime.sendMessage(message).catch(() => {});
-    if (ownerTab !== undefined) void chrome.tabs.sendMessage(ownerTab, message).catch(() => {});
+    if (ownerTab !== undefined) await chrome.tabs.sendMessage(ownerTab, message).catch(() => {});
   }
   const engine = (action: string, payload: object = {}) => chrome.runtime.sendMessage({ channel: READER_CHANNEL, target: 'engine', action, ...payload });
   async function ensureDocument() {
@@ -31,7 +32,8 @@ export default defineBackground(() => {
   async function stop() {
     pagePlayerAvailable = undefined;
     try {
-      await publish(idleSnapshot());
+      // Carry the released tuple so a delayed Stop cannot clear a new source.
+      await publish({ ...idleSnapshot(), sessionId: snapshot.sessionId, sourceId: snapshot.sourceId });
       if (await chrome.offscreen.hasDocument()) {
         await engine('stop').catch(() => {});
         const final = await engine('diagnostics').catch(() => undefined);
@@ -45,15 +47,15 @@ export default defineBackground(() => {
   async function activeTab() { return (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id; }
   async function showPlayer(tabId: number, focus = true) {
     try {
-      let shown = await chrome.tabs.sendMessage(tabId, { type: 'reader:show', focus }).catch(() => undefined);
+      let shown = await chrome.tabs.sendMessage(tabId, { type: 'reader:show', focus, sessionId: snapshot.sessionId }).catch(() => undefined);
       if (!shown?.shown) {
         await chrome.scripting.executeScript({ target: { tabId }, files: ['content-scripts/main.js'] });
-        shown = await chrome.tabs.sendMessage(tabId, { type: 'reader:show', focus });
+        shown = await chrome.tabs.sendMessage(tabId, { type: 'reader:show', focus, sessionId: snapshot.sessionId });
       }
       return shown?.shown === true;
     } catch { return false; /* Chrome-owned pages/PDF viewer cannot be injected. */ }
   }
-  async function start(input: ReaderRequest | (() => Promise<ReaderRequest>), tabId?: number, requestedAt = Date.now()) {
+  async function start(input: ReaderRequest | ((sessionId: string) => Promise<ReaderRequest>), tabId?: number, requestedAt = Date.now()) {
     await stop();
     try {
       ownerTab = tabId ?? await activeTab();
@@ -61,8 +63,8 @@ export default defineBackground(() => {
       await publish({ ...idleSnapshot(), phase: 'preparing', sessionId, message: 'Preparing your reading…' });
       // Mount before extraction/validation, so failures also have a visible home.
       pagePlayerAvailable = ownerTab !== undefined && await showPlayer(ownerTab, false);
-      const request = validateRequest(typeof input === 'function' ? await input() : input);
-      await publish({ ...snapshot, voice: request.voice, speed: request.speed, message: 'Preparing the installed voice…' });
+      const request = validateRequest(typeof input === 'function' ? await input(sessionId) : input);
+      await publish({ ...snapshot, sourceId: request.sourceId, voice: request.voice, speed: request.speed, message: 'Preparing the installed voice…' });
       await ensureDocument();
       const result = await engine('start', { request, sessionId, requestedAt });
       if (result?.error) throw new Error(result.error);
@@ -75,13 +77,17 @@ export default defineBackground(() => {
       throw error;
     }
   }
-  async function readPage(selectionOnly: boolean, tabId?: number, requestedAt = Date.now()) {
+  async function readPage(selectionOnly: boolean, tabId?: number, requestedAt = Date.now(), fallbackText?: string) {
     const id = tabId ?? await activeTab();
     if (id === undefined) throw new Error('Open a page to read, or paste text in the reader.');
-    return start(async () => {
-      const results = await chrome.scripting.executeScript({ target: { tabId: id }, args: [selectionOnly], func: extractReadableText });
+    return start(async sessionId => {
+      const source = await chrome.tabs.sendMessage(id, { type: 'reader:extract', selectionOnly, sessionId }).catch(() => undefined);
+      const results = source?.text ? undefined : await chrome.scripting.executeScript({ target: { tabId: id }, args: [selectionOnly], func: extractReadableText }).catch(error => {
+        if (fallbackText) return []; // Context-menu text can still play on non-injectable documents.
+        throw error;
+      });
       const settings = await chrome.storage.sync.get(['voice', 'voiceName', 'speed']);
-      return { text: results[0]?.result ?? '', voice: settings.voice, voiceName: settings.voiceName, speed: settings.speed };
+      return { text: source?.text || results?.[0]?.result || fallbackText || '', sourceId: source?.text ? source.sourceId : undefined, voice: settings.voice, voiceName: settings.voiceName, speed: settings.speed };
     }, id, requestedAt);
   }
   chrome.runtime.onInstalled.addListener(() => {
@@ -89,8 +95,14 @@ export default defineBackground(() => {
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === 'readText' && info.selectionText) void serial(async () => {
-      const settings = await chrome.storage.sync.get(['voice', 'voiceName', 'speed']);
-      await start({ text: info.selectionText!, voice: settings.voice, voiceName: settings.voiceName, speed: settings.speed }, tab?.id);
+      if (info.frameId) {
+        // A selection inside another frame has no top-document ranges. Never
+        // associate it with a different selection left behind in the main frame.
+        const settings = await chrome.storage.sync.get(['voice', 'voiceName', 'speed']);
+        await start({ text: info.selectionText!, voice: settings.voice, voiceName: settings.voiceName, speed: settings.speed }, tab?.id);
+        return;
+      }
+      await readPage(true, tab?.id, Date.now(), info.selectionText);
     }).catch(reportError);
   });
   chrome.commands.onCommand.addListener(command => {
@@ -174,6 +186,11 @@ export default defineBackground(() => {
     pagePlayerAvailable = saved.readerSnapshot?.pagePlayerAvailable;
     const exists = await chrome.offscreen.hasDocument();
     if (exists) { const current = await engine('get'); if (current?.snapshot) snapshot = { ...current.snapshot, pagePlayerAvailable }; }
-    else { ownerTab = undefined; pagePlayerAvailable = undefined; await publish(idleSnapshot()); }
+    else {
+      pagePlayerAvailable = undefined;
+      await publish({ ...idleSnapshot(), sessionId: saved.readerSnapshot?.sessionId, sourceId: saved.readerSnapshot?.sourceId });
+      ownerTab = undefined;
+      await chrome.storage.session.set({ readerOwnerTab: null });
+    }
   })().catch(() => { snapshot = idleSnapshot(); ownerTab = undefined; });
 });

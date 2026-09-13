@@ -1,0 +1,50 @@
+{
+  "workspaceVersion": 175,
+  "item": {
+    "id": "PL-24",
+    "rank": 12,
+    "title": "Highlight the sentence being spoken on the source page",
+    "problem": "The reader does not show which source-page sentence is currently being spoken, so the owner cannot visually follow playback in the article.",
+    "desiredOutcome": "The source page visibly and accessibly highlights the actual sentence being spoken and keeps that highlight synchronized through the supported playback lifecycle.",
+    "status": "in-progress",
+    "projectIds": [
+      "tts"
+    ],
+    "decisionIds": [],
+    "researchKeys": [],
+    "completionCriteria": [
+      {
+        "id": "PL-24-C1",
+        "text": "Define and test normalized source-text-to-DOM mapping that identifies the intended sentence without corrupting or losing the article’s structure.",
+        "met": false,
+        "evidence": ""
+      },
+      {
+        "id": "PL-24-C2",
+        "text": "Make the sentence highlight follow actual playback through supported pause, seek, replay and resume behavior, and clear it on stop, error or navigation.",
+        "met": false,
+        "evidence": ""
+      },
+      {
+        "id": "PL-24-C3",
+        "text": "Support the native route only to the precision established by PL-23’s boundary-capability result, without presenting timer guesses as precise speech position.",
+        "met": false,
+        "evidence": ""
+      },
+      {
+        "id": "PL-24-C4",
+        "text": "Complete accessible visual QA on a full source page and on selected text, including readable focus, contrast and cleanup behavior.",
+        "met": false,
+        "evidence": ""
+      }
+    ],
+    "nextAction": "Managed task 01a09cda-534e-7ee2-81cd-90469f044618 in /Users/ioannism/.codex/worktrees/c525/tts-chrome starts normalized source-text/DOM mapping and Kokoro sentence highlighting now, including highlight lifecycle and accessible page/selection QA. Only the native-boundary adapter depends on PL-23’s capability result. The coordinator owns the cross-task engine/protocol contract and will serialize audible or GPU QA.",
+    "ownerBlocker": "",
+    "sourcePaths": [
+      "/Users/ioannism/.codex/worktrees/fce4/tts-chrome/docs/evidence/product-planning/2026-09-14-owner-intake.md",
+      "/Users/ioannism/.codex/worktrees/fce4/tts-chrome/docs/evidence/native-integration/REVIEW.md",
+      "/Users/ioannism/.codex/worktrees/fce4/tts-chrome/docs/evidence/product-planning/2026-09-14-pl23-pl24-coordination-receipt.json"
+    ],
+    "updatedAt": "2026-09-13T22:20:51.902Z"
+  }
+}

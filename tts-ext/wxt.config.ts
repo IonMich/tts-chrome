@@ -7,7 +7,7 @@ export default defineConfig({
   manifest: {
     cross_origin_embedder_policy: { value: 'require-corp' },
     cross_origin_opener_policy: { value: 'same-origin' },
-    name: 'Local Reader', version: '2.1.1', minimum_chrome_version: '116',
+    name: 'Local Reader', version: '2.1.2', minimum_chrome_version: '116',
     description: 'Read selected text or articles aloud using an installed local voice. No account or speech service.',
     permissions: ['activeTab', 'scripting', 'contextMenus', 'storage', 'offscreen', 'nativeMessaging'],
     web_accessible_resources: [{ resources: ['content-scripts/main.css'], matches: ['<all_urls>'] }],

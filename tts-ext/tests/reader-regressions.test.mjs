@@ -88,11 +88,11 @@ test('Catalog lookup shares an active speech port without closing it and stale d
  assert.deepEqual(events.map(event=>event.type),['ended','started','ended']);assert.equal(second.disconnects,1);
 });
 
-test('Native stop has a bounded cancellation fallback; disconnects and send failures release their ports',async()=>{
+test('Native stop has a bounded, truthful timeout failure; disconnects and send failures release their ports',async()=>{
  const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');
  const stopped=fakeNativePort(),events=[];const bridge=new NativeMessagingBridge(message=>events.push(message),()=>stopped.port,5);
  bridge.speak('speech','Hello');bridge.stop();assert.deepEqual(stopped.sent.at(-1),{action:'stop',id:'speech'});
- await new Promise(resolve=>setTimeout(resolve,15));assert.equal(events.at(-1).type,'cancelled');assert.equal(stopped.disconnects,1);
+ await new Promise(resolve=>setTimeout(resolve,15));assert.equal(events.at(-1).type,'error');assert.equal(events.at(-1).error,'stop-timeout');assert.equal(stopped.disconnects,1);
  const dropped=fakeNativePort(),dropEvents=[],dropBridge=new NativeMessagingBridge(message=>dropEvents.push(message),()=>dropped.port);
  dropBridge.speak('dropped','Hello');dropped.drop();assert.equal(dropEvents.at(-1).type,'error');assert.equal(dropped.disconnects,1);
  const failed=fakeNativePort({postError:true}),failedBridge=new NativeMessagingBridge(()=>{},()=>failed.port);
@@ -137,14 +137,14 @@ test('Speech segmentation covers ordinary and unbroken inputs without a discarde
  }
 });
 
-async function launchHarness({text='A selected passage.',injectable=true,extractionError,nativePort}={}){
+async function launchHarness({text='A selected passage.',injectable=true,extractionError,nativePort,mappedSource}={}){
  const listeners={},calls=[],states=[];let exists=false,injected=false;
  const event=name=>({addListener(fn){listeners[name]=fn;}});
  const chrome={
   runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onInstalled:event('installed'),onMessage:event('message'),connectNative:()=>nativePort?.port,sendMessage:async message=>{if(message.target==='engine')calls.push(message);return{ok:true};}},
   storage:{session:{get:async()=>({}),set:async value=>{if(value.readerSnapshot)states.push(value.readerSnapshot);}},sync:{get:async()=>({})}},
   offscreen:{hasDocument:async()=>exists,createDocument:async()=>{exists=true;},closeDocument:async()=>{exists=false;},Reason:{WORKERS:'WORKERS'}},
-  tabs:{query:async()=>[{id:42}],update:async(id,options)=>{calls.push({action:'focus-tab',id,...options});return{windowId:7};},sendMessage:async(id,message)=>{if(message.type==='reader:show'){calls.push({action:'show',id,focus:message.focus});if(!injected)throw Error('No receiver');return{shown:true};}},onRemoved:event('removed'),onUpdated:event('updated')},
+  tabs:{query:async()=>[{id:42}],update:async(id,options)=>{calls.push({action:'focus-tab',id,...options});return{windowId:7};},sendMessage:async(id,message)=>{if(message.type==='reader:show'){calls.push({action:'show',id,focus:message.focus});if(!injected)throw Error('No receiver');return{shown:true};}if(message.type==='reader:extract'){calls.push({action:'source-extract',...message});return mappedSource;}},onRemoved:event('removed'),onUpdated:event('updated')},
   windows:{update:async(id,options)=>calls.push({action:'focus-window',id,...options})},
   contextMenus:{onClicked:event('context'),removeAll(){},create(){}},commands:{onCommand:event('command')},
   scripting:{executeScript:async options=>{calls.push({action:options.files?'inject':'extract'});if(options.files){if(!injectable)throw Error('Page cannot be injected');injected=true;return[];}if(extractionError)throw Error(extractionError);return[{result:text}];}},
@@ -177,6 +177,23 @@ test('Empty selections and extraction failures remain visible; blocked pages ret
  assert.equal(h.calls.filter(c=>c.action==='start').length,1,'pasted text can run with popup fallback');
 });
 
+test('Mapped page capture shares its session/source tuple, and Stop publishes the released tuple',async()=>{
+ const h=await launchHarness({mappedSource:{text:'A😀 sentence.\nAnother one.',sourceId:'source-dom'}});
+ await h.command('read-page',{selectionOnly:true});const start=h.calls.find(c=>c.action==='start');
+ assert.equal(start.request.sourceId,'source-dom');assert.equal(start.request.text,'A😀 sentence.\nAnother one.');
+ const capture=h.calls.find(c=>c.action==='source-extract');assert.equal(capture.sessionId,start.sessionId);assert.equal(capture.selectionOnly,true);
+ assert.equal(h.calls.filter(c=>c.action==='extract').length,0,'no second text extraction can change the mapping');
+ await h.command('stop');const stopped=h.states.at(-1);assert.equal(stopped.phase,'idle');assert.equal(stopped.sessionId,start.sessionId);assert.equal(stopped.sourceId,'source-dom');
+});
+
+test('Context-menu selections retain text fallback on blocked documents and never borrow another frame source',async()=>{
+ for(const frameId of [0,3]){
+  const h=await launchHarness({injectable:false,extractionError:'Cannot extract this document',mappedSource:frameId?{text:'Wrong top-frame selection.',sourceId:'wrong'}:undefined});
+  h.listeners.context({menuItemId:'readText',selectionText:'Requested selection.',frameId},{id:42});await h.command('get');
+  const start=h.calls.find(c=>c.action==='start');assert.equal(start.request.text,'Requested selection.');assert.equal(start.request.sourceId,undefined);
+ }
+});
+
 test('Owning-tab and error cleanup disconnect an active native host',async()=>{
  for(const cleanup of ['tab-close','error']){
   const port=fakeNativePort(),h=await launchHarness({nativePort:port});
@@ -195,6 +212,40 @@ test('One first clip exceeding the read-ahead limit still starts playback',async
  assert.equal(h.contexts[0].scheduled,1);assert.equal(h.engine.snapshot.phase,'playing');
  assert.equal(h.workers[0].messages.filter(m=>m.type==='generate').length,1,'read-ahead remains bounded after playback starts');
  h.engine.stop();
+});
+
+test('Source sentence position follows media playback, pause, seek and replay rather than generation or wall time',async()=>{
+ const h=engineHarness();await h.engine.start({text:'Same sentence. Same sentence.',sourceId:'source-a'},'source-session');
+ const worker=h.workers[0];worker.ready();worker.audio(0,5);await flush();worker.audio(1,7);await flush();
+ const position=()=>JSON.parse(JSON.stringify(h.engine.snapshot.spokenPosition));
+ assert.equal(h.engine.snapshot.generatedChunks,2);
+ assert.deepEqual(position(),{precision:'sentence',start:0,end:14});
+ h.advance(20000);assert.deepEqual(position(),{precision:'sentence',start:0,end:14},'generation/wall time do not select a later sentence');
+ h.streams[0].position=5.1;h.advance(250);assert.deepEqual(position(),{precision:'sentence',start:15,end:29});
+ await h.engine.pause();h.advance(20000);assert.equal(h.engine.snapshot.phase,'paused');assert.equal(position().start,15);
+ h.engine.seek(1);assert.equal(position().start,0);assert.equal(h.engine.snapshot.phase,'paused');
+ h.engine.setSpeed(1.5);assert.equal(position().start,0);await h.engine.resume();assert.equal(position().start,0);
+ h.streams[0].position=12;h.streams[0].audio.ended=true;h.advance(250);assert.equal(h.engine.snapshot.phase,'complete');assert.equal(position().precision,'unavailable');
+ await h.engine.resume();assert.equal(position().start,0,'replay uses the retained media start');
+ h.engine.stop();assert.equal(h.engine.snapshot.phase,'idle');assert.equal(h.engine.snapshot.sourceId,undefined);
+});
+
+test('Retained source cues evict with audio and replacement/failure cannot retain old spoken positions',async()=>{
+ const h=engineHarness();await h.engine.start({text:'First sentence. Second sentence.',sourceId:'source-a'},'first');
+ const old=h.workers[0];old.ready();old.audio(0,5);await flush();old.audio(1,8);await flush();
+ h.streams[0].start=5.5;h.engine.seek(0);assert.equal(h.engine.snapshot.spokenPosition.start,16);
+ await h.engine.start({text:'Replacement sentence.',sourceId:'source-b'},'second');old.audio(1,8);await flush();
+ assert.equal(h.engine.snapshot.sourceId,'source-b');assert.equal(h.engine.snapshot.spokenPosition.precision,'unavailable');
+ h.workers[1].ready();h.workers[1].onmessage({data:{type:'error',error:'Injected generation failure'}});await flush();
+ assert.equal(h.engine.snapshot.phase,'error');assert.equal(h.engine.snapshot.spokenPosition.precision,'unavailable');h.engine.stop();
+});
+
+test('Worker token split keeps the parent source sentence across both actual audio cues',async()=>{
+ const h=engineHarness();await h.engine.start({text:'A long sentence has many words.',sourceId:'source-split'},'split');
+ const worker=h.workers[0];worker.ready();const text=worker.messages.at(-1).text;
+ worker.onmessage({data:{type:'split',index:0,parts:[text.slice(0,16),text.slice(16)]}});await flush();
+ worker.audio(0,5);await flush();worker.audio(1,5);await flush();h.streams[0].position=6;h.advance(250);
+ assert.equal(h.engine.snapshot.spokenPosition.start,0);assert.equal(h.engine.snapshot.spokenPosition.end,31);h.engine.stop();
 });
 
 test('Stop during audio initialization prevents a late worker from starting',async()=>{
@@ -246,7 +297,7 @@ test('A missing Mac helper reports an error and never falls back to Kokoro',asyn
 test('Stopping active Mac system speech stops its native request',async()=>{
  const calls=[],h=engineHarness({nativeTransport:async(action,fields)=>{calls.push({action,...fields});return{ok:true};}});
  await h.engine.start({text:'Stop this passage.',voice:'mac:macos-start-speaking',voiceName:'Mac voice (Start Speaking)'},'native-stop');await flush();const active=calls.find(call=>call.action==='native-speak');
- h.engine.handleNativeMessage({type:'started',id:active.id});await flush();await h.engine.pause();assert.equal(h.engine.snapshot.phase,'complete');assert.match(h.engine.snapshot.message,/Stopped/);assert(calls.some(call=>call.action==='native-stop'&&call.id===active.id));assert.equal(h.workers.length,0);assert.equal(h.contexts.length,0);
+ h.engine.handleNativeMessage({type:'started',id:active.id});await flush();await h.engine.pause();assert.equal(h.engine.snapshot.stopping,true);h.engine.handleNativeMessage({type:'cancelled',id:active.id});await flush();assert.equal(h.engine.snapshot.phase,'complete');assert.equal(h.engine.snapshot.stopReason,'user');assert.match(h.engine.snapshot.message,/Stopped/);assert(calls.some(call=>call.action==='native-stop'&&call.id===active.id));assert.equal(h.workers.length,0);assert.equal(h.contexts.length,0);
 });
 
 test('A long pause releases the worker; resume retains buffers and creates only one replacement',async()=>{
@@ -298,4 +349,63 @@ test('Unknown duration remains unknown until synthesis completes; future audio c
 test('Completed replay retains a finite deadline after seek or replay-pause, then clears audio',async()=>{
  const h=engineHarness();await h.engine.start({text:'A short passage.'},'expiry');h.workers[0].ready();h.workers[0].audio(0,8);await flush();const stream=h.streams[0];stream.position=8;stream.audio.ended=true;h.advance(1);assert.equal(h.engine.snapshot.phase,'complete');const firstDeadline=h.engine.snapshot.replayExpiresAt;assert(firstDeadline);
  h.engine.seek(3);assert.equal(h.engine.snapshot.phase,'paused');assert(h.engine.snapshot.replayExpiresAt>=firstDeadline);await h.engine.resume();assert.equal(h.engine.snapshot.replayExpiresAt,undefined);await h.engine.pause();assert(h.engine.snapshot.replayExpiresAt);h.advance(120001);assert.equal(h.engine.snapshot.seekableEndSec,0);assert.equal(h.engine.diagnostics.encodedStreamResident,false);assert.equal(h.contexts[0].state,'closed');
+});
+
+test('Native Stop waits for terminal acknowledgement and ignores a late started signal',async()=>{
+ const calls=[],h=engineHarness({nativeTransport:async(action,fields)=>{calls.push({action,...fields});return{ok:true};}});
+ await h.engine.start({text:'Stop before startup completes.',voice:'mac:macos-start-speaking'},'stopping');
+ const id=calls.find(c=>c.action==='native-speak').id;
+ await h.engine.pause();
+ assert.notEqual(h.engine.snapshot.phase,'complete','transport acceptance does not confirm speech stopped');
+ assert.equal(h.engine.snapshot.stopping,true);
+ h.engine.handleNativeMessage({type:'started',id});await flush();
+ assert.notEqual(h.engine.snapshot.phase,'playing');
+ h.engine.handleNativeMessage({type:'cancelled',id});await flush();
+ assert.equal(h.engine.snapshot.phase,'complete');assert.equal(h.engine.snapshot.stopReason,'user');
+ assert.equal(h.engine.snapshot.stopping,false);h.engine.stop();
+});
+
+test('A deferred native Stop response cannot overwrite replacement or closed sessions',async()=>{
+ for(const replacement of [false,true]){
+  const finishStops=[];const h=engineHarness({nativeTransport:(action)=>action==='native-stop'?new Promise(resolve=>{finishStops.push(resolve);}):Promise.resolve({ok:true})});
+  await h.engine.start({text:'Original.',voice:'mac:macos-start-speaking'},'old');
+  const stop=h.engine.pause();h.engine.stop();
+  if(replacement)await h.engine.start({text:'Replacement.',voice:'mac:macos-start-speaking'},'new');
+  for(const finishStop of finishStops)finishStop({ok:true});await stop;
+  assert.equal(h.engine.snapshot.phase,replacement?'preparing':'idle');
+  assert.equal(h.engine.snapshot.sessionId,replacement?'new':undefined);h.engine.stop();
+ }
+});
+
+test('Native bridge terminal listeners may start replacement without losing its active port',async()=>{
+ const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');const port=fakeNativePort(),events=[];
+ const bridge=new NativeMessagingBridge(message=>{events.push(message);if(message.id==='old')bridge.speak('new','Replacement.');},()=>port.port);
+ bridge.speak('old','Original.');port.receive({type:'ended',id:'old'});
+ assert.equal(port.disconnects,0);
+ port.receive({type:'started',id:'new'});assert.equal(events.at(-1).id,'new');bridge.close();
+});
+
+test('Native Stop failure stays an error and late Stop failure cannot corrupt a replacement',async()=>{
+ for(const replace of [false,true]){
+  const pending=[],h=engineHarness({nativeTransport:action=>action==='native-stop'?new Promise(resolve=>pending.push(resolve)):Promise.resolve({ok:true})});
+  await h.engine.start({text:'Original.',voice:'mac:macos-start-speaking',sourceId:'source-a'},'a');const stop=h.engine.pause();
+  if(replace)await h.engine.start({text:'New.',voice:'mac:macos-start-speaking',sourceId:'source-b'},'b');
+  pending.forEach(resolve=>resolve({error:'Stop failed'}));await stop;
+  assert.equal(h.engine.snapshot.phase,replace?'preparing':'error');assert.equal(h.engine.snapshot.stopping,false);
+  assert.equal(h.engine.snapshot.stopReason,undefined);assert.equal(h.engine.snapshot.sourceId,replace?'source-b':'source-a');
+  assert.equal(h.engine.snapshot.spokenPosition.precision,'unavailable');h.engine.stop();
+ }
+});
+
+test('Native Stop is idempotent while pending and replay clears Stopped without changing the source',async()=>{
+ const calls=[],h=engineHarness({nativeTransport:async(action,fields)=>{calls.push({action,...fields});return{ok:true};}});
+ await h.engine.start({text:'Full source retained.',voice:'mac:macos-start-speaking',sourceId:'source'},'session');
+ const first=calls.find(c=>c.action==='native-speak');await h.engine.pause();await h.engine.pause();
+ assert.equal(calls.filter(c=>c.action==='native-stop').length,1);
+ h.engine.handleNativeMessage({type:'ended',id:first.id});await flush();assert.equal(h.engine.snapshot.stopReason,'user');
+ await h.engine.resume();const replay=calls.filter(c=>c.action==='native-speak').at(-1);
+ assert.equal(replay.text,first.text);assert.notEqual(replay.id,first.id);assert.equal(h.engine.snapshot.sourceId,'source');
+ assert.equal(h.engine.snapshot.stopReason,undefined);assert.equal(h.engine.snapshot.stopping,false);
+ h.engine.handleNativeMessage({type:'cancelled',id:first.id});await flush();assert.equal(h.engine.snapshot.phase,'preparing');
+ h.engine.stop();
 });

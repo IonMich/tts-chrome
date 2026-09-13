@@ -97,9 +97,8 @@ export class NativeMessagingBridge {
     clearTimeout(this.stopTimer);
     this.stopTimer = setTimeout(() => {
       if (this.port !== port || this.activeId !== requestId) return;
-      this.activeId = null;
-      this.emit({ type: 'cancelled', id: requestId });
       this.disconnectPort(port, false);
+      this.emit({ type: 'error', id: requestId, error: 'stop-timeout', message: 'The Mac voice did not confirm Stop. Its connection was closed. Try reading again.' });
     }, this.stopTimeoutMs);
   }
 
@@ -135,13 +134,14 @@ export class NativeMessagingBridge {
     }
     if (!['started', 'ended', 'cancelled', 'error'].includes(String(response.type)) || typeof response.id !== 'string') return;
     if (response.id !== this.activeId) return;
-    this.emit(response as NativeHostResponse);
     if (response.type === 'ended' || response.type === 'cancelled' || response.type === 'error') {
       clearTimeout(this.stopTimer);
       this.stopTimer = undefined;
       this.activeId = null;
-      this.closeIfIdle(port);
     }
+    // Retire the old request before notifying: a listener may start a replay.
+    this.emit(response as NativeHostResponse);
+    this.closeIfIdle(port);
   }
 
   private closeIfIdle(port: NativePort) {

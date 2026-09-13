@@ -2,7 +2,7 @@
 
 Read selected text or an article aloud in Chrome using Kokoro or the optional macOS Start Speaking helper. Speech runs locally without an account, API key or Python server.
 
-Version **2.1.1** moves Kokoro to ONNX Runtime 1.26.0’s native WebGPU implementation, retaining the original full-precision model and voices. See the [diagnosis, measured comparison and review status](docs/evidence/kokoro-freeze/REVIEW.md). Version 2.1.0 added **Mac voice (Start Speaking)** using the system voice route accepted in the listening proof. See [Mac helper setup and checks](native/mac/README.md). This route reads the extracted text continuously and offers Stop and replay from the beginning. It has no pause, speed, time seeking or timeline; the controls below describe Kokoro. Installation, Chrome reload and article acceptance are separate steps.
+Version **2.1.2** adds playback-synchronized Kokoro sentence highlighting on the source page and consistent Mac Start, Stop and replay state in the popup and page player. It retains version 2.1.1’s ONNX Runtime Web 1.26.0 native WebGPU path, original full-precision model and voices; see the [GPU diagnosis](docs/evidence/kokoro-freeze/REVIEW.md). The accepted Mac voice still has no demonstrated pause, speed, time seek or speech-position API; that remaining parity work is tracked in [GitHub issue #1](https://github.com/IonMich/tts-chrome/issues/1). Installation, Chrome reload and article acceptance are separate steps.
 
 Nothing appears on visited pages until you ask it to read. An explicit request opens a compact charcoal player with pause/resume, inline pitch-preserving speed, ±15-second movement, an accessible seek bar, and Close. Voice and next-reading defaults remain in the extension menu.
 

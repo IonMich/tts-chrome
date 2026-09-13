@@ -1,12 +1,13 @@
 import { normalizeSpeechText } from './speechSegments';
+import type { SpokenPosition } from './speechPosition';
 export const READER_CHANNEL = 'local-reader-v2';
 export const VOICES = ['af_sarah', 'af_alloy', 'af_nicole', 'am_adam', 'am_michael', 'am_onyx', 'bf_alice', 'bf_lily', 'bm_fable'] as const;
 export const MAC_VOICE_PREFIX = 'mac:';
 export interface MacVoice { id: string; name: string; language: string; quality?: string; }
 export interface VoiceCatalog { macVoices: MacVoice[]; macError?: string; }
 export type ReaderPhase = 'idle' | 'installing' | 'preparing' | 'buffering' | 'playing' | 'paused' | 'complete' | 'error';
-export interface ReaderRequest { text: string; voice?: string; voiceName?: string; speed?: number; }
-export interface ValidatedReaderRequest { text: string; voice: string; voiceName: string; speed: number; }
+export interface ReaderRequest { text: string; voice?: string; voiceName?: string; speed?: number; sourceId?: string; }
+export interface ValidatedReaderRequest { text: string; voice: string; voiceName: string; speed: number; sourceId?: string; }
 export interface ReaderLaunchResult { playerShown: boolean; }
 export interface ReaderSnapshot {
   phase: ReaderPhase; sessionId?: string; voice: string; voiceName?: string; speed: number;
@@ -16,9 +17,13 @@ export interface ReaderSnapshot {
   modelResident?: boolean; generatedChunks?: number; totalChunks?: number;
   pagePlayerAvailable?: boolean;
   speechMode?: 'system';
+  stopping?: boolean; stopReason?: 'user';
+  sourceId?: string;
+  spokenPosition?: SpokenPosition;
   revision?: number;
 }
 export function isCurrentSnapshot(current: ReaderSnapshot, next: ReaderSnapshot) {
+  if (next.phase === 'idle' && current.sessionId && next.sessionId !== current.sessionId) return false;
   return current.sessionId !== next.sessionId || current.revision === undefined || next.revision === undefined || next.revision >= current.revision;
 }
 export const idleSnapshot = (): ReaderSnapshot => ({ phase: 'idle', voice: 'af_sarah', speed: 1, elapsedSec: 0, durationSec: null, bufferedSec: 0, modelResident: false });
@@ -35,5 +40,6 @@ export function validateRequest(request: ReaderRequest): ValidatedReaderRequest 
   const speed = request.speed ?? 1;
   if (!Number.isFinite(speed) || speed < 0.5 || speed > 2) throw new Error('Choose a speed between 0.5× and 2×.');
   const voiceName = typeof request.voiceName === 'string' && request.voiceName.trim() ? request.voiceName.trim().slice(0, 120) : voice;
-  return { text, voice, voiceName, speed };
+  const sourceId = typeof request.sourceId === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(request.sourceId) ? request.sourceId : undefined;
+  return { text, voice, voiceName, speed, ...(sourceId ? { sourceId } : {}) };
 }
