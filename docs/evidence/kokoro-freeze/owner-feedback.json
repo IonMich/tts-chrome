@@ -1,0 +1,26 @@
+{
+  "voice": "af_nicole",
+  "reportedPhrase": "always right before the \"because\" of because i believe it could",
+  "priority": "Definitive explanation and GPU fix, not only a temporary CPU workaround.",
+  "remainingFailure": "note that still I notice that unrelated video playback becomes very low fps (<10fps) when the sound is generated during your tests. no freezing of the cursor, which is an improvement",
+  "scope": "Owner report during the GPU test series; not attributed to one instrumented run.",
+  "followups": [
+    {
+      "text": "again low FPS just now",
+      "during": "gpu-video unpaced comparison"
+    },
+    {
+      "text": "agaain low fps",
+      "during": "gpu-paced 1 ms comparison"
+    },
+    {
+      "text": "again low fps",
+      "during": "gpu-short 80-character comparison"
+    },
+    {
+      "text": "now the voice is completely broken jibberish",
+      "during": "gpu-fp16 comparison",
+      "disposition": "Rejected for speech quality; isolated variant ended, original fp32 installation unchanged."
+    }
+  ]
+}

@@ -11,5 +11,13 @@ wheels/
 
 **/.DS_Store
 
+native/mac/.build/
+
 tts-ext/src/public/models/Kokoro-82M-v1.0-ONNX/onnx/model.onnx
 tts-ext/src/public/onnx/ort-wasm-simd-threaded.jsep.wasm
+tts-ext/src/public/onnx/ort-wasm-simd-threaded.asyncify.wasm
+
+# Rebuilt diagnostic pages include the packaged 325 MB model.
+docs/evidence/kokoro-freeze/harness/*/
+docs/evidence/kokoro-freeze/harness/video-motion.mp4
+docs/evidence/kokoro-freeze/trace/.build/
