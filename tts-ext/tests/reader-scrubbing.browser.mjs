@@ -1,0 +1,43 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import http from 'node:http';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const {chromium}=await import(process.env.READER_PLAYWRIGHT??'playwright');
+const output=process.env.READER_SEEK_EVIDENCE??await fs.mkdtemp('/private/tmp/reader-seek-evidence-');await fs.mkdir(output,{recursive:true});
+const bundle=await build({entryPoints:[path.join(root,'tests/fixtures/reader-scrubbing.tsx')],bundle:true,write:false,outdir:'fixture',format:'esm',platform:'browser',tsconfig:path.join(root,'tsconfig.json')});
+const files=new Map(bundle.outputFiles.map(f=>['/'+path.basename(f.path),f.contents]));
+files.set('/',Buffer.from('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/reader-scrubbing.css"><div id="root"></div><script type="module" src="/reader-scrubbing.js"></script>'));
+const server=http.createServer((req,res)=>{const body=files.get(req.url);res.writeHead(body?200:404,{'Content-Type':req.url?.endsWith('.js')?'text/javascript':req.url?.endsWith('.css')?'text/css':'text/html'});res.end(body??'Not found');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const browser=await chromium.launch({headless:true,executablePath:process.env.READER_CHROME,args:['--autoplay-policy=no-user-gesture-required']});
+const report={checks:{},errors:[],boundary:'Real Chromium input gestures against the production React player and NativeAudioStream Opus/WebM playback, with a generated tone and deliberately delayed control acknowledgments. No speech model or GPU inference.'};
+const context=await browser.newContext({viewport:{width:900,height:700},hasTouch:true}),page=await context.newPage();page.on('pageerror',e=>report.errors.push(e.message));
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const inspect=()=>page.evaluate(()=>window.scrubHarness.inspect());
+const events=()=>page.evaluate(()=>window.scrubHarness.events);
+const idle=()=>page.waitForFunction(()=>window.scrubHarness.inspect().activeCommands===0&&document.querySelector('.reader-player__main')?.disabled===false);
+const slider=page.getByRole('slider');
+async function gesture(fraction,{hold=300,release=true}={}){const r=await slider.boundingBox();await page.mouse.move(r.x+r.width*.2,r.y+r.height/2);await page.mouse.down();await page.mouse.move(r.x+r.width*fraction,r.y+r.height/2,{steps:8});await wait(hold);const during={value:Number(await slider.inputValue()),range:await slider.evaluate(e=>({min:e.min,max:e.max})),audio:await inspect()};if(release)await page.mouse.up();return during;}
+try{
+ await page.goto(`http://127.0.0.1:${server.address().port}/`);await page.getByRole('button',{name:'Prepare native audio'}).click();await slider.waitFor();await page.waitForFunction(()=>!!window.scrubHarness);
+ await page.getByRole('button',{name:'Resume reading',exact:true}).click();await idle();
+ const before=await events();const during=await gesture(.75,{release:false});assert(during.audio.paused);assert.equal(during.audio.context,'suspended');const pausedPosition=during.audio.position;
+ await page.evaluate(()=>{window.scrubHarness.range(5,120);window.scrubHarness.stale();});await wait(260);
+ assert(Math.abs(Number(await slider.inputValue())-during.value)<.11);assert.deepEqual(await slider.evaluate(e=>({min:e.min,max:e.max})),during.range);assert(Math.abs((await inspect()).position-pausedPosition)<.02);
+ await page.mouse.up();const releaseSamples=[];for(let i=0;i<10;i++){releaseSamples.push(Number(await slider.inputValue()));await wait(35);}await idle();assert(releaseSamples.every(v=>Math.abs(v-during.value)<.8),JSON.stringify(releaseSamples));assert.equal((await inspect()).paused,false);
+ const dragEvents=(await events()).slice(before.length).filter(e=>e.event==='start');assert.deepEqual(dragEvents.map(e=>e.kind),['pause','seek','resume']);assert.equal(dragEvents.filter(e=>e.kind==='seek').length,1);report.checks.playingDrag={during,releaseSamples,events:dragEvents};
+ await page.evaluate(()=>window.scrubHarness.resetRange());await idle();await page.getByRole('button',{name:'Pause reading',exact:true}).click();await idle();
+ const pausedEvents=(await events()).length;await gesture(.35);await idle();assert((await inspect()).paused);assert.deepEqual((await events()).slice(pausedEvents).filter(e=>e.event==='start').map(e=>e.kind),['seek']);report.checks.pausedDrag=true;
+ const clickEvents=(await events()).length;await slider.click({position:{x:(await slider.boundingBox()).width*.6,y:10}});await idle();assert.equal((await events()).slice(clickEvents).filter(e=>e.event==='start'&&e.kind==='seek').length,1);report.checks.clickSingleCommit=true;
+ await slider.focus();const keyboardStart=Number(await slider.inputValue());await page.keyboard.press('ArrowRight');await page.keyboard.press('ArrowRight');await page.keyboard.press('ArrowRight');await idle();assert(Number(await slider.inputValue())>=keyboardStart+.25);assert((await inspect()).paused);report.checks.keyboardRepeated={from:keyboardStart,to:Number(await slider.inputValue())};
+ await page.getByRole('button',{name:'Resume reading',exact:true}).click();await idle();const cancelBefore=(await events()).length;await gesture(.85,{release:false});await page.keyboard.press('Tab');await page.mouse.up();await idle();assert.equal((await inspect()).paused,false);assert.equal((await events()).slice(cancelBefore).filter(e=>e.event==='start'&&e.kind==='seek').length,0);report.checks.blurCancelResumesWithoutSeek=true;
+ const cdp=await context.newCDPSession(page),r=await slider.boundingBox();const touch=async(type,x)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:type==='touchEnd'||type==='touchCancel'?[]:[{x,y:r.y+r.height/2,id:1}]});
+ await touch('touchStart',r.x+r.width*.4);await touch('touchMove',r.x+r.width*.7);await wait(300);assert((await inspect()).paused);const touchTarget=Number(await slider.inputValue());await touch('touchEnd');await idle();assert(Math.abs((await inspect()).position-touchTarget)<.8);assert.equal((await inspect()).paused,false);report.checks.touchDrag={target:touchTarget};
+ const touchCancelBefore=(await events()).length;await touch('touchStart',r.x+r.width*.3);await touch('touchMove',r.x+r.width*.8);await wait(240);await touch('touchCancel');await idle();assert.equal((await inspect()).paused,false);assert.equal((await events()).slice(touchCancelBefore).filter(e=>e.event==='start'&&e.kind==='seek').length,0);report.checks.pointerCancel=true;
+ await page.getByRole('button',{name:'Pause reading',exact:true}).click();await idle();await gesture(.1,{release:false});await page.evaluate(()=>window.scrubHarness.range(30,80));await page.mouse.up();await idle();assert((await inspect()).position>=29.98);report.checks.movedHistoryClamps=true;await page.evaluate(()=>window.scrubHarness.resetRange());
+ await gesture(.2,{hold:10});await gesture(.8,{hold:10});await idle();assert((await inspect()).position>65);assert.equal((await inspect()).maximumActiveCommands,1);report.checks.rapidGestures={finalPosition:(await inspect()).position,maximumActiveCommands:1};
+ await page.screenshot({path:path.join(output,'native-seek-player.png')});await gesture(.9,{release:false});const expiryEvents=(await events()).length;await page.evaluate(()=>window.scrubHarness.expire());await page.mouse.up();await wait(500);assert.equal((await inspect()).context,'closed');assert.equal((await events()).slice(expiryEvents).filter(e=>e.event==='start').length,0);assert(await slider.isDisabled());report.checks.expiryDuringDrag=true;
+ assert.equal(report.errors.length,0);report.passed=true;
+}catch(error){report.failure=String(error);report.events=await events().catch(()=>[]);await page.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});process.exitCode=1;}finally{await fs.writeFile(path.join(output,'native-seek-report.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({...report,output},null,2));await browser.close();await new Promise(resolve=>server.close(resolve));}
