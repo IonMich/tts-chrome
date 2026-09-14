@@ -2,12 +2,14 @@
 
 Turn a selected passage or a full article into speech without leaving the page. Local Reader runs in Chrome, keeps speech processing on your machine, and places a compact player beside the text.
 
+Local Reader includes **Kokoro**, an open-source text-to-speech model that turns text into audio locally for nine bundled English voices. Local Reader adds playback controls and page highlighting. On macOS, an optional helper can instead use the system voice selected for **Start Speaking**.
+
 <p><picture>
   <source media="(max-width: 600px)" srcset="docs/assets/reader-preview-mobile.png">
-  <img src="docs/assets/reader-preview.png" alt="Illustrative Local Reader view with an excerpt from Dario Amodei’s essay highlighted above the Kokoro playback controls.">
+  <img src="docs/assets/reader-preview.png" alt="Illustrative Local Reader view with an excerpt from Dario Amodei’s essay highlighted above the playback controls.">
 </picture></p>
 
-*Kokoro playback and highlighting, illustrated with an excerpt from Dario Amodei’s [Machines of Loving Grace](https://darioamodei.com/essay/machines-of-loving-grace).*
+*Local Reader playback and highlighting with Kokoro, illustrated with an excerpt from Dario Amodei’s [Machines of Loving Grace](https://darioamodei.com/essay/machines-of-loving-grace).*
 
 [Get started](#build-from-source) · [Choose a voice](#choose-a-voice) · [Current limits](#what-to-expect) · [Technical notes](tts-ext/README.md)
 
@@ -15,11 +17,11 @@ Turn a selected passage or a full article into speech without leaving the page. 
 
 Select text and choose **Read aloud**, open the extension to read the current article, or paste text into the popup. An explicit request opens the page player; Local Reader does not add UI to every site in advance.
 
-Kokoro supports pause and resume, 0.5×–2× speed, ±15-second movement, an accessible timeline, replay, and Close. On a source page, the highlight follows the sentence tied to generated audio and clears when the reading ends. Starting another reading replaces the current one cleanly.
+With the bundled voices, Local Reader supports pause and resume, 0.5×–2× speed, ±15-second movement, an accessible timeline, replay, and Close. On a source page, the highlight follows the sentence tied to generated audio and clears when the reading ends. Starting another reading replaces the current one cleanly.
 
 ## Choose a voice
 
-| Feature | Kokoro | Mac voice |
+| Feature | Bundled voices (Kokoro) | Mac system voice |
 |---|---|---|
 | **Voices** | Nine bundled English voices, including Nicole | The current macOS system voice |
 | **Playback** | Pause/resume, speed, seek/skip, timeline, replay, Stop/Close | Start, Stop, and whole-text replay |
@@ -40,7 +42,7 @@ npm run prepare:assets
 npm run build
 ```
 
-`prepare:assets` verifies the pinned speech assets and obtains missing files. The original fp32 model is about 325 MB, so first preparation can take time.
+`prepare:assets` verifies the pinned speech assets and obtains missing files. The original fp32 Kokoro model is about 325 MB, so first preparation can take time.
 
 Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select:
 
@@ -48,7 +50,7 @@ Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**,
 tts-chrome/tts-ext/.output/chrome-mv3
 ```
 
-Refresh the article after rebuilding or reloading. Kokoro is ready from that unpacked build. The Mac helper remains a developer setup tied to the existing extension ID; follow its [guarded install and rollback instructions](native/mac/README.md). A packaged release still needs the source-provenance and notice work tracked in [issue #3](https://github.com/IonMich/tts-chrome/issues/3).
+Refresh the article after rebuilding or reloading. The bundled Kokoro voices are ready from that unpacked build. The Mac helper remains a developer setup tied to the existing extension ID; follow its [guarded install and rollback instructions](native/mac/README.md). A packaged release still needs the source-provenance and notice work tracked in [issue #3](https://github.com/IonMich/tts-chrome/issues/3).
 
 ## What to expect
 
