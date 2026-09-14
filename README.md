@@ -4,10 +4,10 @@ Turn a selected passage or a full article into speech without leaving the page. 
 
 <p><picture>
   <source media="(max-width: 600px)" srcset="docs/assets/reader-preview-mobile.png">
-  <img src="docs/assets/reader-preview.png" alt="Illustrative Local Reader view with an article sentence highlighted above the Kokoro playback controls.">
+  <img src="docs/assets/reader-preview.png" alt="Illustrative Local Reader view with an excerpt from Dario Amodei’s essay highlighted above the Kokoro playback controls.">
 </picture></p>
 
-*Kokoro sentence highlighting and playback controls, shown on an illustrative article.*
+*Kokoro playback and highlighting, illustrated with an excerpt from Dario Amodei’s [Machines of Loving Grace](https://darioamodei.com/essay/machines-of-loving-grace).*
 
 [Get started](#build-from-source) · [Choose a voice](#choose-a-voice) · [Current limits](#what-to-expect) · [Technical notes](tts-ext/README.md)
 
