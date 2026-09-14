@@ -35,3 +35,7 @@ Full GPL text captured from the primary eSpeak NG repository is available as `li
 ## Mediabunny 1.56.0
 
 The encoded streaming playback controller uses unmodified Mediabunny modules, under Mozilla Public License 2.0, for Opus encoding through browser WebCodecs and append-only WebM muxing. Source: https://github.com/Vanilagy/mediabunny/tree/v1.56.0 . Exact installed source is available in `node_modules/mediabunny`; the license is included in `licenses/mediabunny-MPL-2.0.txt`. No model weights are supplied by this dependency.
+
+## Public packaging follow-up
+
+The unresolved corresponding-source and provenance packaging work is tracked in [GitHub issue #3](https://github.com/IonMich/tts-chrome/issues/3). This local-review notice does not by itself establish public-distribution readiness.
