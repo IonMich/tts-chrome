@@ -1,311 +1,97 @@
-import { useState, useEffect } from "react";
-import { Button } from "@/components/ui/button";
-import { Eraser, Play, StopCircle, Pause, List, CheckIcon } from "lucide-react";
-import { Card } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectGroup,
-  SelectLabel,
-  SelectItem,
-} from "@/components/ui/select";
-import { Toggle } from "@/components/ui/toggle";
-import { Progress } from "@/components/ui/progress"; // Added import
-import Loader from "@/components/ui/Loader";
-import {
-  // processSegment,
-  stopSpeech,
-  reset,
-  waitForPlaybackCompletion,
-  setCurrentVoice,
-  setCurrentSpeed,
-  audioContext,
-  processSegmentClientSide, // Import client-side function
-} from "@/lib/ttsClient";
-import { 
-  addProgressCallback, 
-  removeProgressCallback, 
-  getCurrentProgress, 
-  isModelLoaded 
-} from "@/lib/modelLoader";
+import { useEffect, useState } from 'react';
+import { ReaderPlayer } from '@/components/reader/ReaderPlayer';
+import { getVoiceCatalog, pauseReader, seekReader, setReaderSpeed, readCurrentPage, resumeReader, startReader, stopReader, subscribeReader, showReaderPlayer } from '@/lib/readerClient';
+import { idleSnapshot, isCurrentSnapshot, macVoiceId, macVoiceValue, VOICES, type MacVoice, type ReaderSnapshot, type ReaderLaunchResult } from '@/lib/readerProtocol';
+import '@/components/reader/reader.css';
 
-function App() {
-  // Model loading state
-  const [loadingProgress, setLoadingProgress] = useState<number>(0); // New state for loading progress
-  const [isModelReady, setIsModelReady] = useState<boolean>(false); // Track if model is loaded
-  const [isLoadingModel, setIsLoadingModel] = useState<boolean>(false); // Track if model is currently being loaded
-  // state for voice selection, input text, and speaking status
-  const [voice, setVoice] = useState<string>("af_sarah");
-  // state for playback speed
-  const [speed, setSpeed] = useState<string>("1.0");
-  const [inputText, setInputText] = useState<string>("");
-  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
-  const [isPaused, setIsPaused] = useState<boolean>(false);
-  const [queueEnabled, setQueueEnabled] = useState<boolean>(true);
+const voiceLabel = (voice: string) => `${voice.slice(3).replace(/^./, s => s.toUpperCase())} · ${voice[0] === 'b' ? 'British' : 'American'}`;
 
-  // Set up progress callback for model loading
+export default function App() {
+  const [snapshot, setSnapshot] = useState<ReaderSnapshot>(idleSnapshot);
+  const [voice, setVoice] = useState<string>('af_sarah');
+  const [speed, setSpeed] = useState(1);
+  const [text, setText] = useState('');
+  const [error, setError] = useState('');
+  const [pending, setPending] = useState(false);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [macVoices, setMacVoices] = useState<MacVoice[]>([]);
+  const [macError, setMacError] = useState('');
+  const [shortcuts, setShortcuts] = useState<Record<string, string>>({});
   useEffect(() => {
-    // Check if model is already loaded
-    const modelLoaded = isModelLoaded();
-    const currentProgress = getCurrentProgress();
-    setIsModelReady(modelLoaded);
-    setLoadingProgress(currentProgress);
-    console.log("Initial model state:", { modelLoaded, progress: currentProgress });
-
-    // Only set up progress callback if model is not already fully loaded
-    if (!modelLoaded || currentProgress < 100) {
-      // Set up progress callback
-      const progressCallback = (progress: number) => {
-        console.log("Progress callback:", progress);
-        setLoadingProgress(progress);
-        if (progress === 100) {
-          setIsModelReady(true);
-          console.log("Model loading complete");
-        }
-      };
-
-      addProgressCallback(progressCallback);
-
-      // Cleanup callback on unmount
-      return () => {
-        removeProgressCallback(progressCallback);
-      };
-    } else {
-      console.log("Model already loaded, skipping progress callback setup");
+    let mounted = true;
+    const unsubscribe = subscribeReader(next => setSnapshot(current => isCurrentSnapshot(current, next) ? next : current));
+    void chrome.commands.getAll().then(commands => {
+      if (mounted) setShortcuts(Object.fromEntries(commands.map(command => [command.name ?? '', command.shortcut || 'Not assigned'])));
+    }).catch(() => { if (mounted) setShortcuts({ trigger_tts: 'Unavailable', trigger_page_tts: 'Unavailable' }); });
+    void Promise.all([chrome.storage.sync.get(['voice', 'speed']), getVoiceCatalog()]).then(([settings, catalog]) => {
+      if (!mounted) return;
+      setMacVoices(catalog.macVoices); setMacError(catalog.macError ?? '');
+      if ((VOICES as readonly string[]).includes(settings.voice) || typeof macVoiceId(settings.voice) === 'string') setVoice(settings.voice);
+      if (Number.isFinite(settings.speed) && settings.speed >= .5 && settings.speed <= 2) setSpeed(settings.speed);
+      setSettingsReady(true);
+    }).catch(() => { if (mounted) setSettingsReady(true); });
+    return () => { mounted = false; unsubscribe(); };
+  }, []);
+  const selectedVoiceName = () => {
+    const nativeId = macVoiceId(voice);
+    return nativeId ? macVoices.find(candidate => candidate.id === nativeId)?.name ?? 'Mac voice' : voiceLabel(voice);
+  };
+  const run = async (command: () => Promise<void>) => {
+    setError(''); setPending(true);
+    try { await command(); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { setPending(false); }
+  };
+  const readPage = (selectionOnly: boolean) => run(async () => {
+    await chrome.storage.sync.set({ voice, voiceName: selectedVoiceName(), speed });
+    finishLaunch(await readCurrentPage(selectionOnly));
+  });
+  const control = async (command: () => Promise<ReaderSnapshot | undefined>) => {
+    const sessionId = snapshot.sessionId;
+    try {
+      const next = await command();
+      if (next) setSnapshot(current => current.sessionId === sessionId && isCurrentSnapshot(current, next) ? next : current);
+      return next;
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+      throw failure;
     }
-  }, []);
-
-  // load persisted voice on mount
-  useEffect(() => {
-    const storageSync = globalThis.chrome?.storage?.sync;
-    if (!storageSync) {
-      console.warn("chrome.storage.sync not available");
-      return;
-    }
-    storageSync.get(["voice"], ({ voice: stored }) => {
-      const v = stored || "af_sarah";
-      setVoice(v);
-      setCurrentVoice(v);
-    });
-    // load persisted speed on mount
-    storageSync.get(["speed"], ({ speed: storedSpeed }) => {
-      const sp = storedSpeed ?? 1.0;
-      setSpeed(sp.toFixed(1));
-      setCurrentSpeed(sp);
-    });
-  }, []);
-
-  // load persisted queue setting
-  useEffect(() => {
-    chrome.storage.sync.get(["queueEnabled"]).then(({ queueEnabled: qe }) => {
-      setQueueEnabled(!!qe);
-    });
-  }, []);
-
-  return (
-    <Card className="m-1 p-2 gap-2 min-w-[300px] rounded-sm shadow-md">
-      <div className="flex items-center justify-center m-4 p-4">
-        <h2 className="text-xl font-medium">TTS Converter</h2>
-      </div>
-      {loadingProgress > 0 && loadingProgress < 100 && ( // Display progress bar only when actively loading
-        <div className="p-4">
-          <Label>Loading Model...</Label>
-          <Progress value={loadingProgress} className="w-full" />
-        </div>
-      )}
-      {/* Always display UI elements - model will load when needed */}
-      <div className="mb-4 flex gap-8">
-            <Label htmlFor="voiceSelect">Voice</Label>
-            <Select
-              value={voice}
-              onValueChange={(value) => {
-                setVoice(value);
-                setCurrentVoice(value);
-                const storageSync = globalThis.chrome?.storage?.sync;
-                if (storageSync) {
-                  storageSync.set({ voice: value });
-                }
-              }}
-            >
-              <SelectTrigger id="voiceSelect" className="w-full mb-2">
-                <SelectValue placeholder="Select a voice" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectLabel>US Female</SelectLabel>
-                  <SelectItem value="af_sarah">Sarah (Default)</SelectItem>
-                  <SelectItem value="af_alloy">Alloy</SelectItem>
-                  <SelectItem value="af_nicole">
-                    Nicole (Relaxation/Sleep)
-                  </SelectItem>
-                </SelectGroup>
-                <SelectGroup>
-                  <SelectLabel>US Male</SelectLabel>
-                  <SelectItem value="am_adam">Adam</SelectItem>
-                  <SelectItem value="am_michael">Michael</SelectItem>
-                  <SelectItem value="am_onyx">Onyx</SelectItem>
-                </SelectGroup>
-                <SelectGroup>
-                  <SelectLabel>GB</SelectLabel>
-                  <SelectItem value="bf_alice">Alice</SelectItem>
-                  <SelectItem value="bf_lily">Lily</SelectItem>
-                  <SelectItem value="bm_fable">Fable</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="mb-4 flex gap-8">
-            <Label htmlFor="speedSelect">Speed</Label>
-            <Select
-              value={speed}
-              onValueChange={(value) => {
-                setSpeed(value);
-                const sp = parseFloat(value);
-                setCurrentSpeed(sp);
-                const storageSync = globalThis.chrome?.storage?.sync;
-                if (storageSync) storageSync.set({ speed: sp });
-              }}
-            >
-              <SelectTrigger id="speedSelect" className="w-24 mb-2">
-                <SelectValue placeholder="Select speed" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="0.5">0.5x</SelectItem>
-                  <SelectItem value="0.75">0.75x</SelectItem>
-                  <SelectItem value="1.0">1x</SelectItem>
-                  <SelectItem value="1.25">1.25x</SelectItem>
-                  <SelectItem value="1.5">1.5x</SelectItem>
-                  <SelectItem value="2.0">2x</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </div>
-          <Textarea
-            id="inputText"
-            placeholder="Enter text here..."
-            rows={5}
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            className="w-full mb-4"
-          />
-          <div className="flex gap-2">
-            <Button
-              variant="default"
-              size="sm"
-              disabled={!inputText.trim() && !isSpeaking}
-              onClick={async () => {
-                if (!isSpeaking) {
-                  // start playback
-                  const fullText = inputText.trim();
-                  if (!fullText) {
-                    console.warn("No text provided");
-                    return;
-                  }
-                  
-                  // Always start loading indicator when processing starts
-                  setIsLoadingModel(true);
-                  console.log("Starting spinner - processing beginning");
-                  
-                  setIsSpeaking(true);
-                  setIsPaused(false);
-                  // Stop any existing speech and streaming processes before starting new one
-                  stopSpeech();
-                  reset();
-                  
-                  try {
-                    // Process the full text directly - this will trigger model loading if needed
-                    console.log("About to call processSegmentClientSide");
-                    await processSegmentClientSide(fullText, (actualDuration) => {
-                      // Audio generation is complete and playback is starting
-                      console.log("Audio generation complete and playback starting - hiding spinner");
-                      setIsLoadingModel(false);
-                    });
-                    console.log("processSegmentClientSide completed");
-                  } catch (e) {
-                    console.error("Error processing text:", e);
-                    setIsSpeaking(false);
-                    setIsPaused(false);
-                    setIsLoadingModel(false);
-                    return;
-                  }
-                  await waitForPlaybackCompletion();
-                  setIsSpeaking(false);
-                  setIsPaused(false);
-                } else if (!isPaused) {
-                  // pause playback
-                  await audioContext.suspend();
-                  setIsPaused(true);
-                } else {
-                  // resume playback
-                  await audioContext.resume();
-                  setIsPaused(false);
-                }
-              }}
-            >
-              {!isSpeaking || isPaused ? (
-                <Play size={16} />
-              ) : (
-                <Pause size={16} />
-              )}
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={!isSpeaking}
-              onClick={() => {
-                // stop playback entirely
-                stopSpeech();
-                setIsSpeaking(false);
-                setIsPaused(false);
-                setIsLoadingModel(false); // Stop loading indicator
-              }}
-            >
-              <StopCircle size={16} />
-            </Button>
-            {isLoadingModel && (
-              <Loader className="h-6 w-6 my-0" />
-            )}
-            <Toggle
-              pressed={queueEnabled}
-              onPressedChange={(next) => {
-                setQueueEnabled(next);
-                chrome.storage.sync.set({ queueEnabled: next });
-              }}
-              variant="outline"
-              size="sm"
-              className="ml-auto"
-              title={queueEnabled ? "Queue mode on" : "Queue mode off"}
-              aria-label="Toggle request queue mode"
-            >
-              {queueEnabled ? (
-                <div className="flex items-center">
-                  <List size={16} />
-                  <CheckIcon size={16} />
-                </div>
-              ) : (
-                <List size={16} />
-              )}
-            </Toggle>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                /* clear input and reset state */
-                setInputText("");
-                setVoice("af_sarah");
-                setIsSpeaking(false);
-              }}
-            >
-              <Eraser size={16} />
-            </Button>
-          </div>
-    </Card>
-  );
+  };
+  const finishLaunch = (result: ReaderLaunchResult) => {
+    // Closing a popup does not stop the background-owned session. Keep it open
+    // when Chrome prevents an in-page player, so fallback controls stay usable.
+    if (result.playerShown) window.close();
+  };
+  const canStart = settingsReady && !pending;
+  return <main className="reader-menu">
+    <h1>Read aloud</h1>
+    <p className="reader-menu__intro">A small player, only when you ask for it.</p>
+    {snapshot.phase !== 'idle' && <section className="reader-menu__session" aria-label="Current reading">
+      {snapshot.pagePlayerAvailable === false && <p className="reader-menu__small">This page does not allow an in-page player. Control this reading here.</p>}
+      <ReaderPlayer state={snapshot} onPause={() => control(()=>pauseReader(snapshot.sessionId))} onResume={() => control(()=>resumeReader(snapshot.sessionId))} onClose={() => void run(stopReader)} onSeek={s=>control(()=>seekReader(s,snapshot.sessionId))} onSpeed={s=>void run(()=>setReaderSpeed(s))} />
+      {snapshot.pagePlayerAvailable !== false && <button className="reader-menu__secondary" disabled={pending} onClick={() => void run(async () => finishLaunch(await showReaderPlayer()))}>Show page player</button>}
+    </section>}
+    <button className="reader-menu__primary" disabled={!canStart} onClick={() => void readPage(true)}>Read selected text</button>
+    <button className="reader-menu__secondary" disabled={!canStart} onClick={() => void readPage(false)}>Read this page</button>
+    <div className={`reader-menu__fields${macVoiceId(voice)?' reader-menu__fields--voice-only':''}`}>
+      <div><label htmlFor="reader-voice">Voice</label><select id="reader-voice" value={voice} disabled={!settingsReady} onChange={event => {
+        const next = event.target.value; setVoice(next); void chrome.storage.sync.set({ voice: next }).catch(() => setError('Could not save the selected voice.'));
+      }}><optgroup label="Mac voices">{macVoices.map(value => <option key={value.id} value={macVoiceValue(value.id)}>{value.name}</option>)}{!macVoices.length&&<option disabled value="mac:unavailable">{macError?'Unavailable':'No voices found'}</option>}{macVoiceId(voice)&&!macVoices.some(value=>macVoiceValue(value.id)===voice)&&<option disabled value={voice}>Unavailable Mac voice</option>}</optgroup><optgroup label="Kokoro">{VOICES.map(value => <option key={value} value={value}>{voiceLabel(value)}</option>)}</optgroup></select></div>
+      {!macVoiceId(voice)&&<div><label htmlFor="reader-speed">Speed</label><select id="reader-speed" value={speed} disabled={!settingsReady} onChange={event => {
+        const next = Number(event.target.value); setSpeed(next); void chrome.storage.sync.set({ speed: next }).catch(() => setError('Could not save the selected speed.'));
+      }}>{[.5,.75,1,1.25,1.5,1.75,2].map(value => <option key={value} value={value}>{value}×</option>)}</select></div>}
+    </div>
+    <p className="reader-menu__small">{macVoiceId(voice)?'The Mac voice uses the Start Speaking setting.':'Voice and speed apply to your next reading.'}</p>
+    <details><summary>Or paste text to read</summary>
+      <label htmlFor="reader-text">Text</label><textarea id="reader-text" value={text} onChange={event => setText(event.target.value)} placeholder="Paste the passage you want to hear…" />
+      <button className="reader-menu__secondary" disabled={!canStart || !text.trim()} onClick={() => void run(async () => finishLaunch(await startReader({ text, voice, voiceName: selectedVoiceName(), speed })))}>Read this text</button>
+    </details>
+    <details><summary>Keyboard shortcuts</summary>
+      <dl className="reader-menu__shortcuts"><dt>Selected text</dt><dd>{shortcuts.trigger_tts ?? 'Checking…'}</dd><dt>Current page</dt><dd>{shortcuts.trigger_page_tts ?? 'Checking…'}</dd></dl>
+      <p className="reader-menu__small">Chrome manages shortcut conflicts. To choose an unused shortcut, open <code>chrome://extensions/shortcuts</code>. Existing assignments stay unchanged.</p>
+    </details>
+    {error && <p role="alert" className="reader-menu__error">{error}</p>}
+    {pending && <p className="reader-menu__notice" role="status">Sending your request…</p>}
+    <p className="reader-menu__notice">Speech runs locally. Close the player to stop and release its resources.</p>
+  </main>;
 }
-
-export default App;

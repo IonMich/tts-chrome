@@ -1,0 +1,5 @@
+#!/bin/zsh
+if [[ "${LOCAL_READER_FAIL_CHMOD:-}" == 1 ]]; then
+  exit 71
+fi
+exec /bin/chmod "$@"
