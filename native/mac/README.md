@@ -50,6 +50,6 @@ inference worker, and makes no model request.
 
 These AppKit selectors are absent from the public headers; runtime guards fail
 explicitly if macOS stops providing them. This is a personal macOS integration,
-not a promise of compatibility with future OS versions. The separate late Kokoro
-cursor-freeze report remains unresolved. Browser acceptance and resource use on
-an actual article must still be checked after manual reload.
+not a promise of compatibility with future OS versions. Kokoro’s runtime repair and remaining measurement boundaries are documented in
+[the GPU review](../../docs/evidence/kokoro-freeze/REVIEW.md). Browser acceptance
+and resource use on an actual article still require checks after manual reload.

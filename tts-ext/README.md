@@ -1,5 +1,7 @@
 # Local Reader extension
 
+[Product overview](../README.md) · [Verification history](../docs/verification.md) · [Mac helper](../native/mac/README.md)
+
 The extension has one background-owned reading session. Kokoro uses an offscreen audio controller and disposable inference worker. The optional Mac voice sends extracted text to an on-demand native helper without creating browser audio or an inference worker. The page hosts the player. The popup launches readings, saves settings and shows compact session status; it provides a fallback player only when Chrome prevents an in-page player.
 
 Version **2.1.2** adds source-page sentence highlighting driven by Kokoro media time and keeps Mac Start, Stop and replay state consistent across the popup and page player. It retains version 2.1.1’s ONNX Runtime Web 1.26.0 native WebGPU path, original full-precision model and voices; see the [measured diagnosis](../docs/evidence/kokoro-freeze/REVIEW.md). The Mac route preserves the accepted system voice but has no demonstrated pause, speed, time seek or speech-position API; follow the remaining parity work in [GitHub issue #1](https://github.com/IonMich/tts-chrome/issues/1).
@@ -61,4 +63,4 @@ The existing Python/WebSocket code and older `ttsClient`/`modelLoader` files are
 
 The buffer retains up to 10 minutes of past audio relative to the current position, plus bounded generated read-ahead and the in-flight clip. This bounds the retained time window, not total browser memory. Read-ahead targets 22 wall-clock seconds, adjusted for playback speed, with at most the currently generated clip beyond that threshold. Seek is clamped to the actual retained range. On completion the inference worker terminates; encoded replay is kept for 120 seconds with a visible expiry, then audio/offscreen resources close. Pause still unloads inference after 30 seconds; Close clears everything immediately. The original lifecycle/segmentation regression cases remain, adapted to the native stream controller, with new speed/range and finite completed-replay inactivity checks. Seeking or pausing completed replay rearms its finite deadline; Resume clears the deadline only while playback is active.
 
-The old direct AudioBufferSource playback measurements remain historical evidence. Actual revised-control acceptance and the small native history/pitch check are recorded in the jobs repository under `docs/evidence/2026-09-09/tts-playback-controls/`.
+Historical playback-control measurements and their limits are summarized in the portable [verification history](../docs/verification.md).
