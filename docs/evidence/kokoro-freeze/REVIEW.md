@@ -30,10 +30,9 @@ recorded as a rejection in owner-feedback.json.
   the reported phrase and reached natural completion. This does not establish
   long CPU playback continuity.
 
-Full evidence is retained in
-/Users/ioannism/.codex/worktrees/fce4/tts-chrome/docs/evidence/kokoro-freeze:
-comparison.json, video-comparison.json, runtime-build-check.json,
-regression-tests.txt, typecheck.txt, build.txt, and the raw JSON files in runs/.
+The portable diagnosis and review are retained in this directory. Raw run JSON,
+generated benchmark summaries, build logs and machine-local integration receipts
+remain local and are intentionally excluded from product commits.
 
 ## Activation and remaining review
 
@@ -42,12 +41,9 @@ video or voice quality. The ordinary-page harness uses the real engine and
 packaged worker; it does not activate the installed extension. The local test
 video's counters do not measure the owner's separate video tab.
 
-The guarded integration-receipt.json in that worktree evidence folder records
-whether 2.1.1 has been
-copied to the existing unpacked folder:
-/Users/ioannism/repos/tts-chrome/tts-ext/.output/chrome-mv3.
-Chrome reload remains manual because the browser URL policy rejected extension
-management; no alternate surface or profile workaround was used.
+The unpacked build belongs at `tts-ext/.output/chrome-mv3`. Machine-local
+integration receipts and rollback backups are not tracked. Chrome reload remains
+manual; no alternate browser profile or extension-management workaround was used.
 
 After integration, reload the existing Local Reader entry on Chrome's extensions
 page, confirm 2.1.1, and refresh the article. Select Nicole and read through the
@@ -58,13 +54,7 @@ are not marked accepted by these measurements.
 
 ## Rollback
 
-Keep the integration receipt and the source/build backup it names. This guarded
-command restores 2.1.0 only if no later edits or build changes would be lost:
-
-```sh
-node /Users/ioannism/.codex/worktrees/fce4/tts-chrome/docs/evidence/kokoro-freeze/integrate.mjs rollback
-```
-
-Then run npm ci in the live tts-ext directory to match the restored lockfile,
-reload the extension and refresh the article manually. The native Mac helper is
-unchanged by this update and has its own separate rollback procedure.
+Use the machine-local integration receipt and its preserved build backup. Restore
+only after checking that no later local build changes would be lost, then reload
+the extension and refresh the article manually. The native Mac helper is unchanged
+by this runtime update and has its own separate rollback procedure.
