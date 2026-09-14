@@ -1,5 +1,13 @@
-# ONNX Models Directory
+# ONNX model asset
 
-Download and place the `model.onnx` file here (~300MB).
-This directory is ignored by git due to the large file size.
-You can download the model from [this link](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/tree/main/onnx).
+Install or verify `model.onnx` through the repository's pinned asset workflow:
+
+```sh
+npm run prepare:assets
+```
+
+`tts-ext/assets-manifest.json` fixes the exact upstream revision, byte size and
+SHA-256 digest. `scripts/prepare-assets.mjs` verifies an existing file or downloads
+that pinned revision to a temporary path, validates it, and only then moves it here.
+Do not replace it with an unpinned download from an upstream `main` branch.
+The 325 MB model file is intentionally ignored by Git.

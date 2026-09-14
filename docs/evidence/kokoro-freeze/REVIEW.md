@@ -10,8 +10,8 @@ Version 2.1.1 replaces that runtime with the released ONNX Runtime Web 1.26.0
 native WebGPU implementation. It retains the original full-precision model,
 Nicole voice, article segmentation and reader controls. The intermediate custom
 submission patch and the rejected half-precision experiment are not included.
-The half-precision test was never installed; the owner's gibberish report remains
-recorded as a rejection in owner-feedback.json.
+The half-precision test was never installed and was rejected after voice-quality
+review; the technical disposition is recorded in [FINDINGS.md](FINDINGS.md).
 
 ## Verified
 

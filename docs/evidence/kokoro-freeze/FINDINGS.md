@@ -102,11 +102,10 @@ in Asyncify and await queue completion did not produce any audio within the
 bounded test. It was stopped and is not a valid production patch. This experiment
 used one short phrase, not the article. No production WASM asset was altered.
 
-The official half-precision model was also tested in isolation. The owner
-reported: “now the voice is completely broken jibberish”. That variant is
-rejected for speech quality, regardless of its performance measurements. It was
-never installed. The original fp32 model and all original voice hashes remain
-unchanged.
+The official half-precision model was also tested in isolation and rejected in
+owner listening as unintelligible, regardless of its performance measurements.
+It was never installed. The original fp32 model and all original voice hashes
+remain unchanged.
 
 ## Released native WebGPU runtime candidate
 

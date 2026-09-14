@@ -38,7 +38,7 @@ Rollback restores those files:
 ```
 
 Reload the existing Local Reader entry in Chrome's extensions page manually,
-confirm **2.1.0**, and refresh the article. In the popup choose **Mac voices →
+confirm **2.1.2**, and refresh the article. In the popup choose **Mac voices →
 Mac voice (Start Speaking)**, then **Read page**. The page player offers **Stop**
 and **Replay from beginning**. It does not expose pause, speed, time seeking or a
 fabricated timeline. Kokoro remains selectable with its separate controls.
