@@ -1,5 +1,5 @@
-// Silent documentation scene. The article and playback position are illustrative;
-// the player, source mapping and highlight painter come from the product.
+// Silent documentation scene. A brief attributed excerpt uses an illustrative
+// playback position; the player, source mapping and painter come from the product.
 import React, { useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ReaderPlayer, type PlayerState } from '@/components/reader/ReaderPlayer';
@@ -7,7 +7,8 @@ import { captureReadingSource } from '@/lib/sourceText';
 import { SourceHighlight } from '@/lib/sourceHighlight';
 import './reader-preview.css';
 
-const sentence = 'An ordinary street begins to feel different when you give it your full attention.';
+const sentence = 'I think that most people are underestimating just how radical the upside of AI could be,';
+const articleUrl = 'https://darioamodei.com/essay/machines-of-loving-grace';
 const state: PlayerState = {
   phase: 'playing', elapsedSec: 18, durationSec: null, bufferedSec: 30,
   seekableStartSec: 0, seekableEndSec: 48, voice: 'af_nicole', voiceName: 'Nicole',
@@ -28,15 +29,12 @@ function Scene() {
   }, []);
   return <main className="scene">
     <div className="paper">
-      <header className="site-header"><span className="wordmark">Fieldnotes</span><span className="site-tag">Small observations. A little more attention.</span></header>
+      <header className="site-header"><a href={articleUrl} className="source-domain">darioamodei.com</a><span className="source-label">EXCERPT</span></header>
       <article>
-        <div className="eyebrow">THE EVERYDAY</div>
-        <h1>Leave a little room.</h1>
-        <p className="standfirst">On taking the long way home.</p>
+        <h1>Machines of<br />Loving Grace</h1>
+        <p className="byline">Dario Amodei</p>
         <div className="article-body">
-          <p>The best part of a walk is often the moment when you stop trying to get somewhere.</p>
-          <p>{sentence}</p>
-          <p>You notice the light between buildings, a conversation from an open window, the shape of a familiar tree.</p>
+          <p>{sentence} …</p>
         </div>
       </article>
       <div className="player-anchor"><ReaderPlayer state={state} onPause={() => {}} onResume={() => {}} onSeek={() => {}} onSpeed={() => {}} onClose={() => {}} /></div>

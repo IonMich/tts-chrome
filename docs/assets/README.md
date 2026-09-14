@@ -1,9 +1,11 @@
 # README preview assets
 
 `reader-preview.png` and `reader-preview-mobile.png` depict the current Kokoro
-player and sentence highlighting on an original, illustrative article. They are
-documentation scenes with a fixed example playback position, not recordings or
-performance measurements. The article is fictional; no external page is copied.
+player and sentence highlighting on a brief attributed excerpt from Dario Amodei’s
+[Machines of Loving Grace](https://darioamodei.com/essay/machines-of-loving-grace).
+They are documentation scenes with a fixed example playback position, not
+recordings or performance measurements. The article excerpt is authentic; the
+page composition is an illustration rather than a capture of the author's site.
 
 The scene imports `ReaderPlayer`, `captureReadingSource` and `SourceHighlight`
 directly from the extension. Player styling, labels and highlight painting come
