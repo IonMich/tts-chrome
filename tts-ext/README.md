@@ -2,7 +2,9 @@
 
 [Product overview](../README.md) · [Verification history](../docs/verification.md) · [Mac helper](../native/mac/README.md)
 
-The extension has one background-owned reading session. Kokoro uses an offscreen audio controller and disposable inference worker. The optional Mac voice sends extracted text to an on-demand native helper without creating browser audio or an inference worker. The page hosts the player. The popup launches readings, saves settings and shows compact session status; it provides a fallback player only when Chrome prevents an in-page player.
+The extension has one background-owned reading session. Kokoro uses an offscreen audio controller and disposable inference worker. The optional Mac voice sends extracted text to an on-demand native helper without creating browser audio or an inference worker. The page and popup provide synchronized playback controls. The popup also launches readings and saves settings.
+
+Select the current voice's portrait or name in either player to change voices. Changes apply to the current reading and save the preference for future readings. Kokoro continues from the start of the current sentence; paused readings stay paused until Play. Switching away from Mac Start Speaking restarts the passage because that interface provides no speech position. Changing a completed reading prepares it from the beginning and waits for Play.
 
 Version **2.1.2** adds source-page sentence highlighting driven by Kokoro media time and keeps Mac Start, Stop and replay state consistent across the popup and page player. It retains version 2.1.1’s ONNX Runtime Web 1.26.0 native WebGPU path, original full-precision model and voices; see the [measured diagnosis](../docs/evidence/kokoro-freeze/REVIEW.md). The Mac route preserves the accepted system voice but has no demonstrated pause, speed, time seek or speech-position API; follow the remaining parity work in [GitHub issue #1](https://github.com/IonMich/tts-chrome/issues/1).
 
@@ -29,13 +31,13 @@ Use Node.js 22 or later for this checked toolchain. Load `.output/chrome-mv3` as
 1. A context-menu command, configured keyboard shortcut or popup button requests a specific text or page.
 2. The background owner stops the previous session, records the owning tab and injects the page controller under `activeTab`.
 3. Only the explicit `reader:show` command creates the player. There is no automatically registered all-page content script.
-4. The offscreen controller creates the audio context and inference worker. Text is split into exact-cover segments with a tokenizer-limit guard before generation; numeric-heavy passages must not silently truncate.
+4. The offscreen controller creates the audio context and inference worker. Speech chunks target 160 characters, with up to 64 extra characters to finish a nearby sentence or clause (224 maximum). Paragraph boundaries and source offsets are preserved. The separate 512-token guard splits oversized input before generation; numeric-heavy passages must not silently truncate.
 5. Generated chunks are scheduled ahead of playback. The UI receives real state, timing and buffering information from the single session.
 6. Stop, completion, long pause and tab lifecycle events release the appropriate resources. Session identifiers and cancellation guards reject stale worker messages.
 
 WebGPU with the full-precision Kokoro model is the preferred route after measured CPU/GPU comparisons. This can involve mixed kernel execution; it is not a claim that every model operation runs on the GPU. The fallback uses the same fp32 model through up to four WASM threads; no second model is downloaded. The longer Nicole CPU comparison avoided critical memory pressure but developed audio underruns; CPU remains an availability fallback. The installed WebGPU route passed a 130.45-second / 11-chunk run with zero recorded scheduling underruns on Apple M2 / Chrome 148, at 4.104 seconds to first rendered non-silent output from engine start. See the root usage notes for the timing origin, offline-test coverage and remaining bounds. A smaller model file did not by itself establish faster or uninterrupted speech.
 
-The build uses the released ONNX Runtime Web 1.26.0 native WebGPU entry point without a local runtime scheduling patch. Model weights, voice data, chunking, inference precision and speech speed are unchanged. Worker-owned tensor wrappers are disposed after extracting the CPU waveform; that cleanup alone did not explain the earlier GPU peak.
+The build uses the released ONNX Runtime Web 1.26.0 native WebGPU entry point without a local runtime scheduling patch. That runtime upgrade retained model weights, voice data, chunking, inference precision and speech speed. Worker-owned tensor wrappers are disposed after extracting the CPU waveform; that cleanup alone did not explain the earlier GPU peak.
 
 ## Source map
 
@@ -53,7 +55,7 @@ The build uses the released ONNX Runtime Web 1.26.0 native WebGPU entry point wi
 
 The preserved regression suite exercises segmentation coverage, numeric/token limits, the long-first-clip startup case, cancellation, stale responses, pause release and background recovery. Simulated browser/audio timing in a regression test is not a speech-performance measurement.
 
-The separate UI preview uses the same React player with a clearly labelled retained recording. It is suitable for reviewing layout and controls. Installed-browser tests separately establish invocation permissions, first rendered non-silent output, scheduled playback gaps, offline requests and cleanup. The measured audible-start estimate includes the browser's reported output latency; it is not a microphone loopback measurement.
+The [README screenshots](../README.md#read-where-you-are) use the production React popup and player with fixed example settings and playback state. They illustrate layout and controls without generating audio. See [screenshot sources and reproduction](../docs/assets/README.md). Installed-browser tests separately establish invocation permissions, first rendered non-silent output, scheduled playback gaps, offline requests and cleanup. The measured audible-start estimate includes the browser's reported output latency; it is not a microphone loopback measurement.
 
 The existing Python/WebSocket code and older `ttsClient`/`modelLoader` files are retained history, not the active entry-point path. Their earlier cancellation, cache and performance behavior must not be attributed to this implementation.
 

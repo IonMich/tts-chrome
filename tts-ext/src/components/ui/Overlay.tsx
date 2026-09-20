@@ -7,11 +7,12 @@ interface OverlayProps {
   onResume: ReaderPlayerProps['onResume'];
   onClose: () => void;
   onSeek:NonNullable<ReaderPlayerProps['onSeek']>; onSpeed:(speed:number)=>void;
+  onVoice: NonNullable<ReaderPlayerProps['onVoice']>;
 }
 
 /** Presentation only. Speech and model lifetime belong to the background session. */
-export default function Overlay({ snapshot, onPause, onResume, onClose, onSeek, onSpeed }: OverlayProps) {
+export default function Overlay({ snapshot, onPause, onResume, onClose, onSeek, onSpeed, onVoice }: OverlayProps) {
   return <div data-reader-focus tabIndex={-1} style={{ outline: 'none' }} onKeyDown={event => {
     if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
-  }}><ReaderPlayer state={snapshot} floating onPause={onPause} onResume={onResume} onClose={onClose} onSeek={onSeek} onSpeed={onSpeed} /></div>;
+  }}><ReaderPlayer state={snapshot} floating onPause={onPause} onResume={onResume} onClose={onClose} onSeek={onSeek} onSpeed={onSpeed} onVoice={onVoice} /></div>;
 }

@@ -1,7 +1,7 @@
-import type { MacVoice, VoiceCatalog } from './readerProtocol';
+import { macVoiceValue, voiceLabel, type MacVoice, type VoiceCatalog } from './readerProtocol';
 
 export const NATIVE_HOST_NAME = 'com.localreader.native_tts';
-export const SYSTEM_SPEECH_VOICE: MacVoice = { id: 'macos-start-speaking', name: 'Mac voice (Start Speaking)', language: 'System' };
+export const SYSTEM_SPEECH_VOICE: MacVoice = { id: 'macos-start-speaking', name: voiceLabel(macVoiceValue('macos-start-speaking')), language: 'System' };
 const MAX_NATIVE_FRAME_BYTES = 1024 * 1024;
 const MAX_NATIVE_TEXT_BYTES = 900_000;
 
@@ -19,6 +19,16 @@ type PendingCapabilities = { resolve: (value: VoiceCatalog) => void; timer: Retu
 type NativePort = Pick<chrome.runtime.Port, 'postMessage' | 'disconnect' | 'onMessage' | 'onDisconnect'>;
 
 export const nativeUnavailableMessage = () => 'The Mac voice helper is unavailable. Install or repair it, then try again.';
+
+export function validateNativeSpeech(id: string, text: string) {
+  if (!id || !text) throw new Error('The Mac voice could not start.');
+  const request = { action: 'speak', id, text };
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).byteLength > MAX_NATIVE_TEXT_BYTES || encoder.encode(JSON.stringify(request)).byteLength >= MAX_NATIVE_FRAME_BYTES) {
+    throw new Error('This passage is too long for Mac Start Speaking. Select a shorter passage and try again.');
+  }
+  return request;
+}
 
 export class NativeMessagingBridge {
   private port: NativePort | null = null;
@@ -68,12 +78,7 @@ export class NativeMessagingBridge {
   }
 
   speak(id: string, text: string) {
-    if (!id || !text) throw new Error('The Mac voice could not start.');
-    const request = { action: 'speak', id, text };
-    const encoder = new TextEncoder();
-    if (encoder.encode(text).byteLength > MAX_NATIVE_TEXT_BYTES || encoder.encode(JSON.stringify(request)).byteLength >= MAX_NATIVE_FRAME_BYTES) {
-      throw new Error('This passage is too long for Mac Start Speaking. Select a shorter passage and try again.');
-    }
+    const request = validateNativeSpeech(id, text);
     const port = this.ensurePort();
     this.activeId = id;
     clearTimeout(this.stopTimer);

@@ -1,4 +1,4 @@
-import { splitSpeech } from './speechSegments';
+import { speechSentenceEnds, splitSpeech } from './speechSegments';
 
 /** UTF-16 offsets into the normalized request text, never into the DOM or PCM. */
 export type SpokenPosition =
@@ -7,8 +7,6 @@ export type SpokenPosition =
 export interface SourceSentence { id: string; start: number; end: number; }
 export interface SourceChunk { text: string; start: number; end: number; }
 export interface SpeechCue extends SourceChunk { audioStart: number; audioEnd: number; }
-
-const abbreviation = /(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc)|\b[A-Z]|\b(?:[A-Za-z]\.)+[A-Za-z])\.$/i;
 
 /** Deterministic on both sides of the extension boundary; blocks are sentences too. */
 export function sourceSentences(text: string): SourceSentence[] {
@@ -21,16 +19,12 @@ export function sourceSentences(text: string): SourceSentence[] {
     if (trimmedEnd > start) sentences.push({ id: `s:${start}:${trimmedEnd}`, start, end: trimmedEnd });
     start = end;
   };
-  for (const match of text.matchAll(/\n|[.!?…]["'”’)\]]*(?=\s|$)|[。！？]["'”’)\]]*/g)) {
-    const end = match.index! + match[0].length;
-    if (match[0][0] === '.' && abbreviation.test(text.slice(start, end))) continue;
-    add(end);
-  }
+  for (const end of speechSentenceEnds(text)) add(end);
   add(text.length);
   return sentences;
 }
 
-/** Keep the proven 160-character/token fallback, but never combine two sentences. */
+/** Bounded, natural speech chunks that never combine source sentences. */
 export function sourceSpeechChunks(text: string): SourceChunk[] {
   return sourceSentences(text).flatMap(sentence => {
     let cursor = sentence.start;

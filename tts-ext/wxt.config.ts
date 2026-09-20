@@ -8,6 +8,7 @@ export default defineConfig({
     cross_origin_embedder_policy: { value: 'require-corp' },
     cross_origin_opener_policy: { value: 'same-origin' },
     name: 'Local Reader', version: '2.1.2', minimum_chrome_version: '116',
+    action: { default_icon: { 16: 'icon/16.png', 24: 'icon/24.png', 32: 'icon/32.png' } },
     description: 'Read selected text or articles aloud using an installed local voice. No account or speech service.',
     permissions: ['activeTab', 'scripting', 'contextMenus', 'storage', 'offscreen', 'nativeMessaging'],
     web_accessible_resources: [{ resources: ['content-scripts/main.css'], matches: ['<all_urls>'] }],

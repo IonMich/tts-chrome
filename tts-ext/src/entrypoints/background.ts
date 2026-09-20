@@ -1,4 +1,4 @@
-import { READER_CHANNEL, idleSnapshot, validateRequest, isCurrentSnapshot, type ReaderSnapshot, type ReaderRequest } from '@/lib/readerProtocol';
+import { READER_CHANNEL, idleSnapshot, validateRequest, isCurrentSnapshot, voiceLabel, macVoiceId, type ReaderSnapshot, type ReaderRequest } from '@/lib/readerProtocol';
 import { extractReadableText } from '@/lib/pageText';
 import { NativeMessagingBridge } from '@/lib/nativeMessaging';
 export default defineBackground(() => {
@@ -15,7 +15,7 @@ export default defineBackground(() => {
     void chrome.runtime.sendMessage({ channel: READER_CHANNEL, target: 'engine', action: 'native-message', message }).catch(() => {});
   });
   async function publish(next: ReaderSnapshot) {
-    const published = { ...next, pagePlayerAvailable };
+    const published = { ...next, voiceName: voiceLabel(next.voice), pagePlayerAvailable };
     snapshot = published;
     await chrome.storage.session.set({ readerSnapshot: snapshot, readerOwnerTab: ownerTab ?? null });
     const message = { channel: READER_CHANNEL, action: 'state', snapshot: published };
@@ -64,7 +64,7 @@ export default defineBackground(() => {
       // Mount before extraction/validation, so failures also have a visible home.
       pagePlayerAvailable = ownerTab !== undefined && await showPlayer(ownerTab, false);
       const request = validateRequest(typeof input === 'function' ? await input(sessionId) : input);
-      await publish({ ...snapshot, sourceId: request.sourceId, voice: request.voice, speed: request.speed, message: 'Preparing the installed voice…' });
+      await publish({ ...snapshot, sourceId: request.sourceId, voice: request.voice, speed: request.speed, speechMode: macVoiceId(request.voice) ? 'system' : undefined, message: 'Preparing the installed voice…' });
       await ensureDocument();
       const result = await engine('start', { request, sessionId, requestedAt });
       if (result?.error) throw new Error(result.error);
@@ -86,8 +86,8 @@ export default defineBackground(() => {
         if (fallbackText) return []; // Context-menu text can still play on non-injectable documents.
         throw error;
       });
-      const settings = await chrome.storage.sync.get(['voice', 'voiceName', 'speed']);
-      return { text: source?.text || results?.[0]?.result || fallbackText || '', sourceId: source?.text ? source.sourceId : undefined, voice: settings.voice, voiceName: settings.voiceName, speed: settings.speed };
+      const settings = await chrome.storage.sync.get(['voice', 'speed']);
+      return { text: source?.text || results?.[0]?.result || fallbackText || '', sourceId: source?.text ? source.sourceId : undefined, voice: settings.voice, speed: settings.speed };
     }, id, requestedAt);
   }
   chrome.runtime.onInstalled.addListener(() => {
@@ -98,8 +98,8 @@ export default defineBackground(() => {
       if (info.frameId) {
         // A selection inside another frame has no top-document ranges. Never
         // associate it with a different selection left behind in the main frame.
-        const settings = await chrome.storage.sync.get(['voice', 'voiceName', 'speed']);
-        await start({ text: info.selectionText!, voice: settings.voice, voiceName: settings.voiceName, speed: settings.speed }, tab?.id);
+        const settings = await chrome.storage.sync.get(['voice', 'speed']);
+        await start({ text: info.selectionText!, voice: settings.voice, speed: settings.speed }, tab?.id);
         return;
       }
       await readPage(true, tab?.id, Date.now(), info.selectionText);
@@ -150,7 +150,7 @@ export default defineBackground(() => {
     }
     if (message.action === 'get') { void lifecycle.then(() => respond({ snapshot })); return true; }
     void serial(async () => {
-      if (['pause', 'resume', 'seek', 'speed'].includes(message.action) && message.sessionId && message.sessionId !== snapshot.sessionId) {
+      if (['pause', 'resume', 'seek', 'speed', 'voice'].includes(message.action) && message.sessionId && (message.sessionId !== snapshot.sessionId || snapshot.phase === 'idle')) {
         respond({ error: 'This reading session ended.' });
         return;
       }
@@ -166,6 +166,24 @@ export default defineBackground(() => {
         result = { playerShown: pagePlayerAvailable };
       }
       else if (message.action === 'stop') await stop();
+      else if (message.action === 'voice') {
+        const { voice, voiceName } = validateRequest({ text: 'Voice preference.', voice: message.voice });
+        if (snapshot.phase === 'idle') {
+          if (macVoiceId(voice)) {
+            const catalog = await native.listVoices();
+            if (!catalog.macVoices.some(entry => entry.id === macVoiceId(voice))) throw new Error(catalog.macError || 'That voice is not available.');
+          }
+          await chrome.storage.sync.set({ voice, voiceName });
+          await publish({ ...snapshot, voice, voiceName });
+        } else {
+          if (!(await chrome.offscreen.hasDocument())) throw new Error('This reading has expired. Start a new reading to change its voice.');
+          const changed = await engine('voice', { voice, sessionId: snapshot.sessionId });
+          if (changed?.error) throw new Error(changed.error);
+          if (!changed?.snapshot || changed.snapshot.sessionId !== snapshot.sessionId || changed.snapshot.voice !== voice) throw new Error('The voice could not be changed. Try again.');
+          if (isCurrentSnapshot(snapshot, changed.snapshot)) await publish(changed.snapshot);
+          await chrome.storage.sync.set({ voice, voiceName });
+        }
+      }
       else if (['pause','resume','seek','speed'].includes(message.action)) {
         if (await chrome.offscreen.hasDocument()) {
           const result = await engine(message.action, {seconds:message.seconds,speed:message.speed});
@@ -175,7 +193,7 @@ export default defineBackground(() => {
         else throw new Error('The reader session ended. Press Play to start again.');
       } else throw new Error('Unknown reader command.');
       respond({ ok: true, snapshot, ...result });
-    }).catch(async error => { await reportError(error); respond({ error: error instanceof Error ? error.message : String(error) }); });
+    }).catch(async error => { if (message.action !== 'voice') await reportError(error); respond({ error: error instanceof Error ? error.message : String(error) }); });
     return true;
   });
   chrome.tabs.onRemoved.addListener(id => { void serial(async () => { if (id === ownerTab) await stop(); }); });
@@ -185,7 +203,7 @@ export default defineBackground(() => {
     ownerTab = typeof saved.readerOwnerTab === 'number' ? saved.readerOwnerTab : undefined;
     pagePlayerAvailable = saved.readerSnapshot?.pagePlayerAvailable;
     const exists = await chrome.offscreen.hasDocument();
-    if (exists) { const current = await engine('get'); if (current?.snapshot) snapshot = { ...current.snapshot, pagePlayerAvailable }; }
+    if (exists) { const current = await engine('get'); if (current?.snapshot) snapshot = { ...current.snapshot, voiceName: voiceLabel(current.snapshot.voice), pagePlayerAvailable }; }
     else {
       pagePlayerAvailable = undefined;
       await publish({ ...idleSnapshot(), sessionId: saved.readerSnapshot?.sessionId, sourceId: saved.readerSnapshot?.sourceId });
