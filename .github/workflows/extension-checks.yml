@@ -3,7 +3,7 @@ name: Extension checks
 on:
   pull_request:
   push:
-    branches: [main, codex/automatic-regression-checks]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
