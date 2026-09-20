@@ -4,8 +4,8 @@ The screenshots are rendered from the extension's current React components:
 
 | Asset | View |
 |---|---|
-| `reader-preview.png` | Desktop article with the player and sentence highlighting |
-| `reader-preview-mobile.png` | The same reading on a narrow page |
+| `reader-overview.png` | Desktop article with the player and sentence highlighting |
+| `reader-overview-mobile.png` | The same reading on a narrow page |
 | `reader-popup.png` | Popup with reading actions, voice portrait and settings |
 | `reader-voices.png` | Open voice picker in the page player |
 
@@ -51,3 +51,8 @@ installed extension or the native helper.
 
 Use the mobile article image below 600 CSS pixels through a README `<picture>`
 element. All four assets are static PNGs and need no motion alternative.
+
+The overview images use fresh filenames because GitHub was serving the previous
+UI from cached `reader-preview` URLs after the images had been replaced. When
+publishing a visual refresh, update the asset filenames and README references
+together so readers receive the new screenshots immediately.

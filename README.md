@@ -5,8 +5,8 @@ Turn a selected passage or a full article into speech without leaving the page. 
 Local Reader includes **Kokoro**, an open-source text-to-speech model that turns text into audio locally for nine bundled English voices. Local Reader adds playback controls and page highlighting. On macOS, an optional helper can instead use the system voice selected for **Start Speaking**.
 
 <p><picture>
-  <source media="(max-width: 600px)" srcset="docs/assets/reader-preview-mobile.png">
-  <img src="docs/assets/reader-preview.png" alt="Illustrative Local Reader view with an excerpt from Dario Amodei’s essay highlighted above the playback controls.">
+  <source media="(max-width: 600px)" srcset="docs/assets/reader-overview-mobile.png">
+  <img src="docs/assets/reader-overview.png" alt="Local Reader’s current green player with Nicole’s portrait, playback controls, and an excerpt from Dario Amodei’s essay highlighted above it.">
 </picture></p>
 
 *Local Reader playback and highlighting with Kokoro, illustrated with an excerpt from Dario Amodei’s [Machines of Loving Grace](https://darioamodei.com/essay/machines-of-loving-grace).*

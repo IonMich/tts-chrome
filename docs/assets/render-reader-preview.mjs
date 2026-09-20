@@ -33,7 +33,7 @@ let browser;
 try {
   const { chromium } = await import(process.env.READER_PLAYWRIGHT ?? 'playwright');
   browser = await chromium.launch({ headless: true, executablePath: process.env.READER_CHROME });
-  for (const [name, width, height] of [['reader-preview', 1100, 820], ['reader-preview-mobile', 440, 800]]) {
+  for (const [name, width, height] of [['reader-overview', 1100, 820], ['reader-overview-mobile', 440, 800]]) {
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2, reducedMotion: 'reduce' });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
