@@ -1,24 +1,27 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: #edece7; color: #282b26; -webkit-font-smoothing: antialiased; }
-.scene { width: 1100px; height: 740px; padding: 26px; }
+.scene { width: 1100px; height: 820px; padding: 26px; }
 .paper { height: 100%; position: relative; overflow: hidden; background: #fcfbf7; border: 1px solid #d8d8cf; border-radius: 14px; }
 .site-header { display: flex; justify-content: space-between; align-items: center; padding: 25px 54px; border-bottom: 1px solid #dedfd7; }
 .source-domain { font: 16px -apple-system, BlinkMacSystemFont, sans-serif; color: #585e51; text-decoration: none; }
 .source-label { font: 10px -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 1.8px; color: #777c70; }
 article { padding: 42px 54px 70px; max-width: 915px; }
-h1 { font: normal 66px/1.04 Georgia, serif; letter-spacing: -2px; margin: 0; }
+.paper h1 { font: normal 66px/1.04 Georgia, serif; letter-spacing: -2px; margin: 0; }
 .byline { font: 17px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; color: #73766b; margin: 19px 0 29px; }
 .article-body { font: 32px/1.53 Georgia, serif; letter-spacing: -.18px; max-width: 805px; }
 .article-body p { margin: 0; text-wrap: balance; }
-.player-anchor { position: absolute; bottom: 30px; right: 28px; zoom: 1.5; }
+.player-anchor { position: absolute; bottom: 30px; right: 28px; zoom: 1.4; }
+.popup-preview { padding: 20px; width: 416px; }
+.popup-preview .reader-menu { border-radius: 18px; box-shadow: 0 12px 32px #09150f22; }
+.voice-preview { padding: 20px; width: 380px; }
 @media (max-width: 600px) {
-  .scene { width: 440px; height: 720px; padding: 12px; }
+  .scene { width: 440px; height: 800px; padding: 12px; }
   .paper { border-radius: 11px; }
   .site-header { padding: 19px 25px; }
   .source-domain { font-size: 14px; }
   .source-label { font-size: 9px; letter-spacing: 1.4px; }
   article { padding: 31px 25px 60px; }
-  h1 { font-size: 48px; letter-spacing: -1.6px; line-height: 1.07; max-width: 360px; }
+  .paper h1 { font-size: 48px; letter-spacing: -1.6px; line-height: 1.07; max-width: 360px; }
   .byline { font-size: 15px; margin: 19px 0 30px; }
   .article-body { font-size: 27px; line-height: 1.52; letter-spacing: -.1px; }
   .player-anchor { zoom: 1.12; bottom: 20px; right: 20px; }

@@ -17,9 +17,21 @@ Local Reader includes **Kokoro**, an open-source text-to-speech model that turns
 
 Select text and choose **Read aloud**, open the extension to read the current article, or paste text into the popup. An explicit request opens the page player; Local Reader does not add UI to every site in advance.
 
+<table>
+  <tr><th>Start reading</th><th>Switch voices</th></tr>
+  <tr>
+    <td valign="top"><img src="docs/assets/reader-popup.png" width="360" alt="Local Reader popup with Read selected text, Read this page, Nicole's portrait, speed, paste text, and keyboard shortcuts."></td>
+    <td valign="top"><img src="docs/assets/reader-voices.png" width="329" alt="The reading player's open voice picker, with illustrated portraits, American and British voice groups, and Nicole selected."></td>
+  </tr>
+</table>
+
+*The current popup and player, shown with an example reading state.*
+
 With the bundled voices, Local Reader supports pause and resume, 0.5×–2× speed, ±15-second movement, an accessible timeline, replay, and Close. On a source page, the highlight follows the sentence tied to generated audio and clears when the reading ends. Starting another reading replaces the current one cleanly.
 
 ## Choose a voice
+
+Click the voice's portrait or name in the player or popup. Your choice applies to the current reading and is saved for the next one. Kokoro continues from the start of the current sentence; a paused reading stays paused until you press Play. Switching away from Mac **Start Speaking** restarts the passage because it provides no playback position.
 
 | Feature | Bundled voices (Kokoro) | Mac system voice |
 |---|---|---|
