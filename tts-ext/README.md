@@ -17,14 +17,22 @@ See [installation and everyday usage](../README.md). The extension is Chrome Man
 ```sh
 npm ci
 npm run prepare:assets
+npm test
 npm run compile
 npm run build
-node --test tests/reader-regressions.test.mjs
 ```
 
 Use Node.js 22 or later for this checked toolchain. Load `.output/chrome-mv3` as an unpacked extension only after the asset checks and build pass. A JavaScript-only build without the model, tokenizer, voices and WASM assets is not a complete installation.
 
 `prepare:assets` handles the hash-verified local asset set. Those assets belong to the installation, not to each reading request. The packaged content-security policy permits same-extension connections; the final acceptance report records actual observed requests and any limits of the offline test.
+
+## Automatic checks
+
+The [Extension checks workflow](../.github/workflows/extension-checks.yml) runs the commands above for every pull request and push to `main`, using Node.js **22.23.2**, `npm ci`, and the committed lockfile. Its stable check name is **Extension regression checks**. Each command has its own log step, and any failure fails the check.
+
+Pull requests cache the large model using the asset manifest's hash. Asset preparation always runs and verifies every asset, including restored files; a cache hit never skips integrity checks. Pushes to `main` and manual workflow runs download the model afresh to exercise clean asset preparation. The npm cache stores downloaded packages, while dependencies are installed anew on every run.
+
+Run the same commands from `tts-ext` locally with Node.js 22.23.2. The workflow runs silent tests and builds only: it needs no Chrome profile, GPU speech session, Mac helper, or repository secrets. Browser playback and native voice acceptance remain separate checks.
 
 ## Session flow
 

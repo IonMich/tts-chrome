@@ -1,0 +1,59 @@
+name: Extension checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extension-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extension:
+    name: Extension regression checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tts-ext
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          cache: npm
+          cache-dependency-path: tts-ext/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      # Only the large ignored model is cached. Every run hashes all assets;
+      # main and manual runs also exercise a fresh model download.
+      - name: Restore model cache for pull requests
+        if: github.event_name == 'pull_request'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tts-ext/src/public/models/Kokoro-82M-v1.0-ONNX/onnx/model.onnx
+          key: speech-model-${{ runner.os }}-${{ hashFiles('tts-ext/assets-manifest.json') }}
+
+      - name: Prepare and verify speech assets
+        run: npm run prepare:assets
+
+      - name: Run regression tests
+        run: npm test
+
+      - name: Check TypeScript
+        run: npm run compile
+
+      - name: Build Chrome extension
+        run: npm run build
