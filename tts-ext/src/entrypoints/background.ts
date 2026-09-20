@@ -6,8 +6,35 @@ export default defineBackground(() => {
   let ownerTab: number | undefined;
   let pagePlayerAvailable: boolean | undefined;
   let lifecycle = Promise.resolve();
-  const serial = <T>(fn: () => Promise<T>): Promise<T> => {
-    const result = lifecycle.then(fn, fn);
+  class CancelledLaunch extends Error { constructor() { super('This reading was cancelled by a newer request.'); } }
+  type Launch = { tabId?: number; cancelled: boolean; cancellation: Promise<never>; cancel: () => void };
+  let launch: Launch | undefined;
+  let engineSession: string | undefined;
+  // Creation/closure can finish after a timeout. Keep ownership until the actual
+  // Chrome operation settles; a timeout must never permit a second acquisition.
+  let documentTask: Promise<unknown> = Promise.resolve();
+  function invalidateLaunch() { launch?.cancel(); engineSession = undefined; }
+  function newLaunch(tabId?: number): Launch {
+    invalidateLaunch();
+    let reject!: (error: Error) => void;
+    const ticket: Launch = { tabId, cancelled: false, cancellation: new Promise((_, fail) => { reject = fail; }),
+      cancel() { if (!ticket.cancelled) { ticket.cancelled = true; reject(new CancelledLaunch()); } } };
+    void ticket.cancellation.catch(() => {});
+    return launch = ticket;
+  }
+  function check(ticket?: Launch) { if (ticket?.cancelled) throw new CancelledLaunch(); }
+  async function bounded<T>(work: Promise<T>, ticket?: Launch, ms = 5000): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      check(ticket);
+      return await Promise.race([work, ...(ticket ? [ticket.cancellation] : []),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('The reader operation timed out. Close the reader and try again.')), ms); })]);
+    } finally { clearTimeout(timer); }
+  }
+  async function step<T>(ticket: Launch, work: () => Promise<T>) { check(ticket); const result = await bounded(work(), ticket); check(ticket); return result; }
+  const serial = <T>(fn: () => Promise<T>, onError?: (error: unknown) => Promise<void>): Promise<T> => {
+    const run = async () => { try { return await fn(); } catch (error) { await onError?.(error); throw error; } };
+    const result = lifecycle.then(run, run);
     lifecycle = result.then(() => {}, () => {});
     return result;
   };
@@ -17,76 +44,104 @@ export default defineBackground(() => {
   async function publish(next: ReaderSnapshot) {
     const published = { ...next, voiceName: voiceLabel(next.voice), pagePlayerAvailable };
     snapshot = published;
+    const tab = ownerTab;
     await chrome.storage.session.set({ readerSnapshot: snapshot, readerOwnerTab: ownerTab ?? null });
+    if (snapshot !== published) return; // A delayed publication cannot broadcast an obsolete state.
     const message = { channel: READER_CHANNEL, action: 'state', snapshot: published };
     void chrome.runtime.sendMessage(message).catch(() => {});
-    if (ownerTab !== undefined) await chrome.tabs.sendMessage(ownerTab, message).catch(() => {});
+    if (tab !== undefined) await chrome.tabs.sendMessage(tab, message).catch(() => {});
   }
   const engine = (action: string, payload: object = {}) => chrome.runtime.sendMessage({ channel: READER_CHANNEL, target: 'engine', action, ...payload });
-  async function ensureDocument() {
-    if (!(await chrome.offscreen.hasDocument())) await chrome.offscreen.createDocument({
+  async function ensureDocument(ticket: Launch) {
+    await step(ticket, () => documentTask);
+    if (!(await step(ticket, () => chrome.offscreen.hasDocument()))) {
+      check(ticket);
+      documentTask = chrome.offscreen.createDocument({
       url: 'offscreen.html', reasons: [chrome.offscreen.Reason.WORKERS],
       justification: 'Run the explicitly requested local speech model in a dedicated disposable worker, with a DOM audio controller.',
+      });
+      await bounded(documentTask, ticket);
+      check(ticket);
+    }
+  }
+  async function releaseDocument() {
+    documentTask = documentTask.catch(() => {}).then(async () => {
+      if (await bounded(chrome.offscreen.hasDocument())) {
+        await bounded(engine('stop'), undefined, 500).catch(() => {});
+        const final = await bounded(engine('diagnostics'), undefined, 500).catch(() => undefined);
+        if (final?.diagnostics) void chrome.storage.session.set({ readerLastDiagnostics: final.diagnostics }).catch(() => {});
+        // Do not timeout this underlying promise: it remains the ownership barrier.
+        await chrome.offscreen.closeDocument();
+      }
     });
+    await bounded(documentTask);
   }
   async function stop() {
+    engineSession = undefined;
     pagePlayerAvailable = undefined;
     try {
       // Carry the released tuple so a delayed Stop cannot clear a new source.
-      await publish({ ...idleSnapshot(), sessionId: snapshot.sessionId, sourceId: snapshot.sourceId });
-      if (await chrome.offscreen.hasDocument()) {
-        await engine('stop').catch(() => {});
-        const final = await engine('diagnostics').catch(() => undefined);
-        if (final?.diagnostics) await chrome.storage.session.set({ readerLastDiagnostics: final.diagnostics });
-        await chrome.offscreen.closeDocument();
-      }
+      await Promise.all([bounded(publish({ ...idleSnapshot(), sessionId: snapshot.sessionId, sourceId: snapshot.sourceId })), releaseDocument()]);
     } finally {
       native.close();
     }
   }
   async function activeTab() { return (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id; }
-  async function showPlayer(tabId: number, focus = true) {
+  async function showPlayer(tabId: number, focus = true, ticket?: Launch) {
     try {
-      let shown = await chrome.tabs.sendMessage(tabId, { type: 'reader:show', focus, sessionId: snapshot.sessionId }).catch(() => undefined);
+      const sessionId = snapshot.sessionId;
+      let shown = await bounded(chrome.tabs.sendMessage(tabId, { type: 'reader:show', focus, sessionId }).catch(() => undefined), ticket);
+      check(ticket);
       if (!shown?.shown) {
-        await chrome.scripting.executeScript({ target: { tabId }, files: ['content-scripts/main.js'] });
-        shown = await chrome.tabs.sendMessage(tabId, { type: 'reader:show', focus, sessionId: snapshot.sessionId });
+        await bounded(chrome.scripting.executeScript({ target: { tabId }, files: ['content-scripts/main.js'] }), ticket);
+        check(ticket);
+        shown = await bounded(chrome.tabs.sendMessage(tabId, { type: 'reader:show', focus, sessionId }), ticket);
       }
       return shown?.shown === true;
     } catch { return false; /* Chrome-owned pages/PDF viewer cannot be injected. */ }
   }
-  async function start(input: ReaderRequest | ((sessionId: string) => Promise<ReaderRequest>), tabId?: number, requestedAt = Date.now()) {
+  async function start(ticket: Launch, input: ReaderRequest | ((sessionId: string) => Promise<ReaderRequest>), tabId?: number, requestedAt = Date.now()) {
+    check(ticket);
     await stop();
     try {
-      ownerTab = tabId ?? await activeTab();
+      check(ticket);
+      ownerTab = tabId ?? await step(ticket, activeTab);
+      ticket.tabId = ownerTab;
       const sessionId = crypto.randomUUID();
-      await publish({ ...idleSnapshot(), phase: 'preparing', sessionId, message: 'Preparing your reading…' });
+      await step(ticket, () => publish({ ...idleSnapshot(), phase: 'preparing', sessionId, message: 'Preparing your reading…' }));
       // Mount before extraction/validation, so failures also have a visible home.
-      pagePlayerAvailable = ownerTab !== undefined && await showPlayer(ownerTab, false);
-      const request = validateRequest(typeof input === 'function' ? await input(sessionId) : input);
-      await publish({ ...snapshot, sourceId: request.sourceId, voice: request.voice, speed: request.speed, speechMode: macVoiceId(request.voice) ? 'system' : undefined, message: 'Preparing the installed voice…' });
-      await ensureDocument();
-      const result = await engine('start', { request, sessionId, requestedAt });
+      pagePlayerAvailable = ownerTab !== undefined && await showPlayer(ownerTab, false, ticket);
+      check(ticket);
+      const request = validateRequest(typeof input === 'function' ? await step(ticket, () => input(sessionId)) : input);
+      await step(ticket, () => publish({ ...snapshot, sourceId: request.sourceId, voice: request.voice, speed: request.speed, speechMode: macVoiceId(request.voice) ? 'system' : undefined, message: 'Preparing the installed voice…' }));
+      await ensureDocument(ticket);
+      engineSession = sessionId;
+      const result = await step(ticket, () => engine('start', { request, sessionId, requestedAt }));
       if (result?.error) throw new Error(result.error);
-      if (pagePlayerAvailable && ownerTab !== undefined) pagePlayerAvailable = await showPlayer(ownerTab);
-      await publish(snapshot);
+      if (pagePlayerAvailable && ownerTab !== undefined) pagePlayerAvailable = await showPlayer(ownerTab, true, ticket);
+      await step(ticket, () => publish(snapshot));
       return { playerShown: pagePlayerAvailable === true };
     } catch (error) {
+      ticket.cancel();
+      engineSession = undefined;
       native.close();
-      if (await chrome.offscreen.hasDocument().catch(() => false)) await chrome.offscreen.closeDocument().catch(() => {});
+      try { await releaseDocument(); }
+      catch (cleanupError) { throw new Error(`${error instanceof Error ? error.message : String(error)} Cleanup has not completed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
       throw error;
     }
   }
-  async function readPage(selectionOnly: boolean, tabId?: number, requestedAt = Date.now(), fallbackText?: string) {
-    const id = tabId ?? await activeTab();
+  async function readPage(ticket: Launch, selectionOnly: boolean, tabId?: number, requestedAt = Date.now(), fallbackText?: string) {
+    check(ticket);
+    const id = tabId ?? await step(ticket, activeTab);
     if (id === undefined) throw new Error('Open a page to read, or paste text in the reader.');
-    return start(async sessionId => {
-      const source = await chrome.tabs.sendMessage(id, { type: 'reader:extract', selectionOnly, sessionId }).catch(() => undefined);
-      const results = source?.text ? undefined : await chrome.scripting.executeScript({ target: { tabId: id }, args: [selectionOnly], func: extractReadableText }).catch(error => {
+    ticket.tabId = id;
+    return start(ticket, async sessionId => {
+      const source = await step(ticket, () => chrome.tabs.sendMessage(id, { type: 'reader:extract', selectionOnly, sessionId }).catch(() => undefined));
+      const results = source?.text ? undefined : await step(ticket, () => chrome.scripting.executeScript({ target: { tabId: id }, args: [selectionOnly], func: extractReadableText }).catch(error => {
         if (fallbackText) return []; // Context-menu text can still play on non-injectable documents.
         throw error;
-      });
-      const settings = await chrome.storage.sync.get(['voice', 'speed']);
+      }));
+      const settings = await step(ticket, () => chrome.storage.sync.get(['voice', 'speed']));
       return { text: source?.text || results?.[0]?.result || fallbackText || '', sourceId: source?.text ? source.sourceId : undefined, voice: settings.voice, speed: settings.speed };
     }, id, requestedAt);
   }
@@ -94,27 +149,35 @@ export default defineBackground(() => {
     chrome.contextMenus.removeAll(() => chrome.contextMenus.create({ id: 'readText', title: 'Read aloud', contexts: ['selection'] }));
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === 'readText' && info.selectionText) void serial(async () => {
+    if (info.menuItemId !== 'readText' || !info.selectionText) return;
+    const ticket = newLaunch(tab?.id);
+    void serial(async () => {
+      check(ticket);
       if (info.frameId) {
         // A selection inside another frame has no top-document ranges. Never
         // associate it with a different selection left behind in the main frame.
-        const settings = await chrome.storage.sync.get(['voice', 'speed']);
-        await start({ text: info.selectionText!, voice: settings.voice, speed: settings.speed }, tab?.id);
+        const settings = await step(ticket, () => chrome.storage.sync.get(['voice', 'speed']));
+        await start(ticket, { text: info.selectionText!, voice: settings.voice, speed: settings.speed }, tab?.id);
         return;
       }
-      await readPage(true, tab?.id, Date.now(), info.selectionText);
-    }).catch(reportError);
+      await readPage(ticket, true, tab?.id, Date.now(), info.selectionText);
+    }, reportError).catch(() => {});
   });
   chrome.commands.onCommand.addListener(command => {
-    if (command === 'trigger_tts' || command === 'trigger_page_tts') void serial(() => readPage(command === 'trigger_tts')).catch(reportError);
+    if (command === 'trigger_tts' || command === 'trigger_page_tts') {
+      const ticket = newLaunch();
+      void serial(() => readPage(ticket, command === 'trigger_tts'), reportError).catch(() => {});
+    }
   });
   async function reportError(error: unknown) {
+    if (error instanceof CancelledLaunch) return;
+    engineSession = undefined;
     try { native.stopActive(); } catch {}
     try {
-      await publish({ ...snapshot, phase: 'error', modelResident: false, error: error instanceof Error ? error.message : String(error) });
+      await bounded(publish({ ...snapshot, phase: 'error', modelResident: false, error: error instanceof Error ? error.message : String(error) })).catch(() => {});
     } finally {
       native.close();
-      if (await chrome.offscreen.hasDocument().catch(() => false)) await chrome.offscreen.closeDocument().catch(() => {});
+      await releaseDocument().catch(() => {});
     }
   }
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
@@ -129,8 +192,11 @@ export default defineBackground(() => {
         return;
       }
       try {
-        if (message.action === 'native-speak') native.speak(message.id, message.text);
-        else native.stop(message.id);
+        if (message.action === 'native-speak') {
+          if (!engineSession || typeof message.id !== 'string' || !message.id.startsWith(engineSession + ':')) throw new CancelledLaunch();
+          native.speak(message.id, message.text);
+        }
+        else if (snapshot.sessionId && typeof message.id === 'string' && message.id.startsWith(snapshot.sessionId + ':')) native.stop(message.id);
         respond({ ok: true });
       } catch (error) {
         respond({ error: error instanceof Error ? error.message : String(error) });
@@ -140,23 +206,25 @@ export default defineBackground(() => {
     if (message.action === 'engine-state') {
       if (sender.url !== chrome.runtime.getURL('offscreen.html')) return;
       if (message.diagnostics && ['complete','error'].includes(message.snapshot?.phase)) void chrome.storage.session.set({ readerLastDiagnostics: message.diagnostics });
-      if (message.snapshot?.sessionId === snapshot.sessionId && snapshot.phase !== 'idle' && isCurrentSnapshot(snapshot, message.snapshot)) {
+      if (message.snapshot?.sessionId === engineSession && message.snapshot?.sessionId === snapshot.sessionId && snapshot.phase !== 'idle' && isCurrentSnapshot(snapshot, message.snapshot)) {
         void publish(message.snapshot);
         if (message.snapshot.phase === 'error' || (message.snapshot.phase === 'complete' && !message.snapshot.replayExpiresAt && message.snapshot.speechMode !== 'system')) void serial(async () => {
-          if (snapshot.sessionId === message.snapshot.sessionId && ['complete', 'error'].includes(snapshot.phase) && await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
-        });
+          if (snapshot.sessionId === message.snapshot.sessionId && ['complete', 'error'].includes(snapshot.phase)) { engineSession = undefined; await releaseDocument(); }
+        }, reportError).catch(() => {});
       }
       return;
     }
     if (message.action === 'get') { void lifecycle.then(() => respond({ snapshot })); return true; }
+    const ticket = ['start', 'read-page'].includes(message.action) ? newLaunch(sender.tab?.id) : undefined;
+    if (message.action === 'stop') invalidateLaunch();
     void serial(async () => {
       if (['pause', 'resume', 'seek', 'speed', 'voice'].includes(message.action) && message.sessionId && (message.sessionId !== snapshot.sessionId || snapshot.phase === 'idle')) {
         respond({ error: 'This reading session ended.' });
         return;
       }
       let result: { playerShown: boolean } | undefined;
-      if (message.action === 'start') result = await start(message.request, sender.tab?.id, message.requestedAt);
-      else if (message.action === 'read-page') result = await readPage(!!message.selectionOnly, sender.tab?.id, message.requestedAt);
+      if (message.action === 'start') result = await start(ticket!, message.request, sender.tab?.id, message.requestedAt);
+      else if (message.action === 'read-page') result = await readPage(ticket!, !!message.selectionOnly, sender.tab?.id, message.requestedAt);
       else if (message.action === 'show-player') {
         if (snapshot.phase === 'idle' || ownerTab === undefined) throw new Error('Start a reading to open its player.');
         const tab = await chrome.tabs.update(ownerTab, { active: true });
@@ -193,22 +261,26 @@ export default defineBackground(() => {
         else throw new Error('The reader session ended. Press Play to start again.');
       } else throw new Error('Unknown reader command.');
       respond({ ok: true, snapshot, ...result });
-    }).catch(async error => { if (message.action !== 'voice') await reportError(error); respond({ error: error instanceof Error ? error.message : String(error) }); });
+    }, message.action === 'voice' ? undefined : reportError).catch(error => { respond({ error: error instanceof Error ? error.message : String(error), ...(error instanceof CancelledLaunch ? { cancelled: true } : {}) }); });
     return true;
   });
-  chrome.tabs.onRemoved.addListener(id => { void serial(async () => { if (id === ownerTab) await stop(); }); });
-  chrome.tabs.onUpdated.addListener((id, change) => { if (change.status === 'loading') void serial(async () => { if (id === ownerTab) await stop(); }); });
+  function releaseOwner(id: number) {
+    if (launch?.tabId === id || (!launch && id === ownerTab)) invalidateLaunch();
+    void serial(async () => { if (id === ownerTab) await stop(); }, reportError).catch(() => {});
+  }
+  chrome.tabs.onRemoved.addListener(releaseOwner);
+  chrome.tabs.onUpdated.addListener((id, change) => { if (change.status === 'loading') releaseOwner(id); });
   lifecycle = (async () => {
-    const saved = await chrome.storage.session.get(['readerOwnerTab', 'readerSnapshot']);
+    const saved = await bounded(chrome.storage.session.get(['readerOwnerTab', 'readerSnapshot']));
     ownerTab = typeof saved.readerOwnerTab === 'number' ? saved.readerOwnerTab : undefined;
     pagePlayerAvailable = saved.readerSnapshot?.pagePlayerAvailable;
-    const exists = await chrome.offscreen.hasDocument();
-    if (exists) { const current = await engine('get'); if (current?.snapshot) snapshot = { ...current.snapshot, voiceName: voiceLabel(current.snapshot.voice), pagePlayerAvailable }; }
+    const exists = await bounded(chrome.offscreen.hasDocument());
+    if (exists) { const current = await bounded(engine('get')); if (current?.snapshot) { snapshot = { ...current.snapshot, voiceName: voiceLabel(current.snapshot.voice), pagePlayerAvailable }; engineSession = snapshot.sessionId; } }
     else {
       pagePlayerAvailable = undefined;
-      await publish({ ...idleSnapshot(), sessionId: saved.readerSnapshot?.sessionId, sourceId: saved.readerSnapshot?.sourceId });
+      await bounded(publish({ ...idleSnapshot(), sessionId: saved.readerSnapshot?.sessionId, sourceId: saved.readerSnapshot?.sourceId }));
       ownerTab = undefined;
-      await chrome.storage.session.set({ readerOwnerTab: null });
+      await bounded(chrome.storage.session.set({ readerOwnerTab: null }));
     }
-  })().catch(() => { snapshot = idleSnapshot(); ownerTab = undefined; });
+  })().catch(() => { snapshot = idleSnapshot(); ownerTab = undefined; engineSession = undefined; });
 });
