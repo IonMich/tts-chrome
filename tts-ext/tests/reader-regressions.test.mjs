@@ -243,9 +243,9 @@ test('The engine label and synthesis route agree despite stale caller voice meta
 test('Owning-tab and error cleanup disconnect an active native host',async()=>{
  for(const cleanup of ['tab-close','error']){
   const port=fakeNativePort(),h=await launchHarness({nativePort:port});
-  await h.command('start',{request:{text:'Read with the Mac.',voice:'mac:macos-start-speaking'}});
+  const started=await h.command('start',{request:{text:'Read with the Mac.',voice:'mac:macos-start-speaking'}});
   const sender={id:'test-extension',url:'chrome-extension://test-extension/offscreen.html'};
-  assert.equal((await h.command('native-speak',{id:'native',text:'Read with the Mac.'},sender)).ok,true);
+  assert.equal((await h.command('native-speak',{id:started.snapshot.sessionId+':1:1',text:'Read with the Mac.'},sender)).ok,true);
   if(cleanup==='tab-close')h.listeners.removed(42);else await h.command('unknown');
   await flush();await flush();
   assert.equal(port.disconnects,1);assert.equal(h.exists,false);

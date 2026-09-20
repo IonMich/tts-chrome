@@ -27,7 +27,7 @@ Select text and choose **Read aloud**, open the extension to read the current ar
 
 *The current popup and player, shown with an example reading state.*
 
-With the bundled voices, Local Reader supports pause and resume, 0.5×–2× speed, ±15-second movement, an accessible timeline, replay, and Close. On a source page, the highlight follows the sentence tied to generated audio and clears when the reading ends. Starting another reading replaces the current one cleanly.
+With the bundled voices, Local Reader supports pause and resume, 0.5×–2× speed, ±15-second movement, an accessible timeline, replay, and Close. On a source page, the highlight follows the sentence tied to generated audio and clears when the reading ends. Pages share one reading session: newer requests replace pending launches, and Close cancels pending launches before releasing the current reader.
 
 ## Choose a voice
 
@@ -40,7 +40,7 @@ Click the voice's portrait or name in the player or popup. Your choice applies t
 | **Highlighting** | Sentence- or chunk-level cues from generated audio | Unavailable because the system route supplies no speech timing |
 | **Setup** | Included in the built extension; WebGPU preferred, WASM fallback | Separate helper registered to the documented extension ID |
 
-Additional Mac playback controls are tracked in [issue #1](https://github.com/IonMich/tts-chrome/issues/1).
+Additional Mac playback controls are tracked in [issue #1](https://github.com/IonMich/tts-chrome/issues/1). Confirming native speech shutdown before replacement remains tracked in [issue #15](https://github.com/IonMich/tts-chrome/issues/15).
 
 ## Build from source
 
