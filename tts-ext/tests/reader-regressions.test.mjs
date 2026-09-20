@@ -127,22 +127,35 @@ test('Actual Kokoro preprocessing: oversized numeric text is split with exact co
 });
 
 test('Speech segmentation covers ordinary and unbroken inputs without a discarded suffix',async()=>{
- const {splitSpeech,normalizeSpeechText}=await moduleOf('src/lib/speechSegments.ts');
+ const {splitSpeech,normalizeSpeechText,MAX_SPEECH_CHUNK_LENGTH}=await moduleOf('src/lib/speechSegments.ts');
  const {validateRequest}=await moduleOf('src/lib/readerProtocol.ts');
  for(const raw of ['Alpha.\n\nBeta '+ 'word '.repeat(150), 'x'.repeat(1500), '1 '.repeat(500), 'A full article continues beyond the old document limit. '.repeat(3000)]){
   const normalized=normalizeSpeechText(raw),pieces=splitSpeech(raw);
   assert.equal(validateRequest({text:raw}).text,normalized);
-  assert(pieces.length>0);assert(pieces.every(s=>s.trim().length<=160));
+  assert(pieces.length>0);assert(pieces.every(s=>s.trim().length<=MAX_SPEECH_CHUNK_LENGTH));
   assert.equal(pieces.join('').replace(/\s/g,''),normalized.replace(/\s/g,''));
  }
 });
 
-async function launchHarness({text='A selected passage.',injectable=true,extractionError,nativePort,mappedSource}={}){
+test('Actual Kokoro preprocessing accepts the Kennedy Center sentence without a token-driven split',async()=>{
+ const {sourceSpeechChunks}=await moduleOf('src/lib/speechPosition.ts');
+ const {guardTokenizer}=await moduleOf('src/lib/tokenGuard.ts');
+ const first='A storm brought down a five-foot piece of ceiling plaster at the John F. Kennedy Center for the Performing Arts this month and its leadership sprang into action.';
+ const second='One thing they did not do was repair the damage.';
+ const chunks=sourceSpeechChunks(first+' '+second),counts=[];
+ assert.equal(chunks.length,2);assert.equal(chunks[0].text,first);
+ const wrapper=new KokoroTTS(null,guardTokenizer(await actualTokenizer()));
+ wrapper.generate_from_ids=async ids=>{counts.push(ids.dims.at(-1));return null;};
+ for(const chunk of chunks)await wrapper.generate(chunk.text,{voice:'af_nicole'});
+ assert.equal(counts.length,2);assert(counts.every(count=>count<=512));
+});
+
+async function launchHarness({text='A selected passage.',injectable=true,extractionError,nativePort,mappedSource,settings={}}={}){
  const listeners={},calls=[],states=[];let exists=false,injected=false;
  const event=name=>({addListener(fn){listeners[name]=fn;}});
  const chrome={
   runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onInstalled:event('installed'),onMessage:event('message'),connectNative:()=>nativePort?.port,sendMessage:async message=>{if(message.target==='engine')calls.push(message);return{ok:true};}},
-  storage:{session:{get:async()=>({}),set:async value=>{if(value.readerSnapshot)states.push(value.readerSnapshot);}},sync:{get:async()=>({})}},
+  storage:{session:{get:async()=>({}),set:async value=>{if(value.readerSnapshot)states.push(value.readerSnapshot);}},sync:{get:async()=>({...settings})}},
   offscreen:{hasDocument:async()=>exists,createDocument:async()=>{exists=true;},closeDocument:async()=>{exists=false;},Reason:{WORKERS:'WORKERS'}},
   tabs:{query:async()=>[{id:42}],update:async(id,options)=>{calls.push({action:'focus-tab',id,...options});return{windowId:7};},sendMessage:async(id,message)=>{if(message.type==='reader:show'){calls.push({action:'show',id,focus:message.focus});if(!injected)throw Error('No receiver');return{shown:true};}if(message.type==='reader:extract'){calls.push({action:'source-extract',...message});return mappedSource;}},onRemoved:event('removed'),onUpdated:event('updated')},
   windows:{update:async(id,options)=>calls.push({action:'focus-window',id,...options})},
@@ -192,6 +205,39 @@ test('Context-menu selections retain text fallback on blocked documents and neve
   h.listeners.context({menuItemId:'readText',selectionText:'Requested selection.',frameId},{id:42});await h.command('get');
   const start=h.calls.find(c=>c.action==='start');assert.equal(start.request.text,'Requested selection.');assert.equal(start.request.sourceId,undefined);
  }
+});
+
+test('Every selection launch uses the saved voice ID even when its cached name belongs to another engine',async()=>{
+ for(const [voice,staleName,expectedName] of [
+  ['af_nicole','Mac voice (Start Speaking)','Nicole · American'],
+  ['mac:macos-start-speaking','Nicole · American','Mac voice (Start Speaking)'],
+ ]){
+  for(const route of ['context','frame-context','shortcut','popup']){
+   const h=await launchHarness({settings:{voice,voiceName:staleName,speed:1.25}});
+   if(route==='context'||route==='frame-context')h.listeners.context({menuItemId:'readText',selectionText:'A selected passage.',frameId:route==='frame-context'?3:0},{id:42});
+   else if(route==='shortcut')h.listeners.command('trigger_tts');
+   else await h.command('read-page',{selectionOnly:true});
+   const result=await h.command('get');
+   const start=h.calls.find(call=>call.action==='start');
+   assert(start,route);assert.equal(start.request.voice,voice);assert.equal(start.request.voiceName,expectedName);assert.equal(start.request.speed,1.25);
+   assert.equal(result.snapshot.voice,voice);assert.equal(result.snapshot.voiceName,expectedName);
+   assert.equal(result.snapshot.speechMode,voice.startsWith('mac:')?'system':undefined);
+  }
+ }
+});
+
+test('The engine label and synthesis route agree despite stale caller voice metadata',async()=>{
+ const nativeCalls=[],h=engineHarness({nativeTransport:async(action,fields)=>{nativeCalls.push({action,...fields});return{ok:true};}});
+ await h.engine.start({text:'A selected passage.',voice:'af_nicole',voiceName:'Mac voice (Start Speaking)'},'kokoro-label');
+ h.workers[0].ready();await flush();
+ assert.equal(h.workers[0].messages.find(message=>message.type==='generate').voice,'af_nicole');
+ assert.equal(h.engine.snapshot.voiceName,'Nicole · American');assert.equal(h.engine.snapshot.speechMode,undefined);assert.equal(nativeCalls.length,0);
+ h.engine.stop();
+ await h.engine.start({text:'A selected passage.',voice:'mac:macos-start-speaking',voiceName:'Nicole · American'},'native-label');
+ assert.equal(h.workers.length,1,'the Mac request must not create another Kokoro worker');
+ assert.equal(nativeCalls.filter(call=>call.action==='native-speak').length,1);
+ assert.equal(h.engine.snapshot.voiceName,'Mac voice (Start Speaking)');assert.equal(h.engine.snapshot.speechMode,'system');
+ h.engine.stop();
 });
 
 test('Owning-tab and error cleanup disconnect an active native host',async()=>{
@@ -408,4 +454,148 @@ test('Native Stop is idempotent while pending and replay clears Stopped without 
  assert.equal(h.engine.snapshot.stopReason,undefined);assert.equal(h.engine.snapshot.stopping,false);
  h.engine.handleNativeMessage({type:'cancelled',id:first.id});await flush();assert.equal(h.engine.snapshot.phase,'preparing');
  h.engine.stop();
+});
+
+const switchText='First sentence is already behind us. Second sentence should continue here. Third sentence finishes the reading.';
+const availableNative={macVoices:[{id:'macos-start-speaking'}]};
+async function playingSwitchHarness(options={}){
+ const h=engineHarness(options);await h.engine.start({text:switchText,sourceId:options.sourceId,voice:'af_sarah'},'voice-session');
+ const worker=h.workers[0];worker.ready();worker.audio(0,6);await flush();worker.audio(1,6);await flush();
+ h.engine.seek(7);return h;
+}
+
+test('Changing Kokoro voice continues the current sentence for mapped selections and unmapped pasted text',async()=>{
+ for(const sourceId of [undefined,'original-source']){
+  const h=await playingSwitchHarness({sourceId}),old=h.workers[0],oldStream=h.streams[0];
+  h.engine.setSpeed(1.5);await h.engine.changeVoice('af_nicole','voice-session');
+  assert.equal(h.engine.snapshot.sessionId,'voice-session');assert.equal(h.engine.snapshot.sourceId,sourceId);
+  assert.equal(h.engine.snapshot.voice,'af_nicole');assert.equal(h.engine.snapshot.speed,1.5);assert.equal(old.terminated,true);assert.equal(oldStream.end,0);
+  const next=h.workers[1];next.ready();assert.equal(next.messages.at(-1).text,'Second sentence should continue here.');assert.equal(next.messages.at(-1).voice,'af_nicole');
+  old.audio(2,6);await flush();assert.equal(h.streams[1].end,0,'late old audio is discarded');
+  next.audio(0,6);await flush();assert.equal(h.engine.snapshot.phase,'playing');
+  if(sourceId)assert.equal(h.engine.snapshot.spokenPosition.start,switchText.indexOf('Second'));
+  else assert.equal(h.engine.snapshot.spokenPosition.precision,'unavailable','unmapped sources do not claim DOM highlighting');
+  h.engine.stop();
+ }
+});
+
+test('Changing a paused voice stays silent; Play generates the selected voice at the original sentence',async()=>{
+ const h=await playingSwitchHarness({sourceId:'original-source'});await h.engine.pause();
+ await h.engine.changeVoice('bf_lily','voice-session');
+ assert.equal(h.engine.snapshot.phase,'paused');assert.equal(h.workers.length,1);assert.equal(h.contexts[1].state,'suspended');assert.equal(h.streams[1].audio.paused,true);
+ await h.engine.resume();const replacement=h.workers[1];replacement.ready();assert.equal(replacement.messages.at(-1).voice,'bf_lily');assert.equal(replacement.messages.at(-1).text,'Second sentence should continue here.');
+ replacement.audio(0,6);await flush();assert.equal(h.engine.snapshot.phase,'playing');assert.equal(h.engine.snapshot.spokenPosition.start,switchText.indexOf('Second'));h.engine.stop();
+});
+
+test('Successive voice changes retain full original offsets and completed replay starts the original passage',async()=>{
+ const h=await playingSwitchHarness({sourceId:'original-source'});await h.engine.changeVoice('af_nicole');let next=h.workers[1];next.ready();next.audio(0,6);await flush();next.audio(1,6);await flush();
+ h.engine.seek(7);await h.engine.changeVoice('bm_fable');next=h.workers[2];next.ready();assert.equal(next.messages.at(-1).text,'Third sentence finishes the reading.\n');
+ next.audio(0,6);await flush();assert.equal(h.engine.snapshot.spokenPosition.start,switchText.indexOf('Third'));
+ h.streams[2].position=6;h.streams[2].audio.ended=true;h.advance(1);assert.equal(h.engine.snapshot.phase,'complete');
+ await h.engine.resume();const replay=h.workers[3];replay.ready();assert.equal(replay.messages.at(-1).text,'First sentence is already behind us.');assert.equal(replay.messages.at(-1).voice,'bm_fable');assert.equal(h.engine.snapshot.sourceId,'original-source');h.engine.stop();
+});
+
+test('Kokoro to native keeps the current sentence and paused intent; native replay retains the original passage',async()=>{
+ for(const paused of [false,true]){
+  const calls=[],h=await playingSwitchHarness({sourceId:'source',nativeTransport:async(action,fields)=>{calls.push({action,...fields});return action==='native-list'?availableNative:{ok:true};}});
+  if(paused)await h.engine.pause();await h.engine.changeVoice('mac:macos-start-speaking','voice-session');
+  assert.equal(h.engine.snapshot.sourceId,'source');assert.equal(h.engine.snapshot.speechMode,'system');assert.equal(h.contexts[0].state,'closed');
+  if(paused){assert.equal(h.engine.snapshot.phase,'paused');assert.equal(calls.filter(c=>c.action==='native-speak').length,0);await h.engine.resume();}
+  const speech=calls.find(c=>c.action==='native-speak');assert.equal(speech.text,switchText.slice(switchText.indexOf('Second')));
+  h.engine.handleNativeMessage({type:'ended',id:speech.id});await flush();await h.engine.resume();assert.equal(calls.filter(c=>c.action==='native-speak').at(-1).text,switchText);h.engine.stop();
+ }
+});
+
+test('Native to Kokoro waits for confirmed Stop and ignores late native lifecycle messages',async()=>{
+ const calls=[],h=engineHarness({nativeTransport:async(action,fields)=>{calls.push({action,...fields});return{ok:true};}});
+ await h.engine.start({text:switchText,sourceId:'source',voice:'mac:macos-start-speaking'},'voice-session');const native=calls.find(c=>c.action==='native-speak');h.engine.handleNativeMessage({type:'started',id:native.id});await flush();
+ const changing=h.engine.changeVoice('af_nicole','voice-session');await flush();assert(calls.some(c=>c.action==='native-stop'&&c.id===native.id));assert.equal(h.workers.length,0);assert.equal(h.engine.snapshot.voice,'mac:macos-start-speaking');
+ h.engine.handleNativeMessage({type:'started',id:native.id});await flush();assert.equal(h.workers.length,0);
+ h.engine.handleNativeMessage({type:'cancelled',id:native.id});await changing;
+ assert.equal(h.engine.snapshot.voice,'af_nicole');assert.equal(h.engine.snapshot.sourceId,'source');h.workers[0].ready();assert.equal(h.workers[0].messages.at(-1).text,'First sentence is already behind us.');
+ h.engine.handleNativeMessage({type:'ended',id:native.id});h.engine.handleNativeMessage({type:'error',id:native.id,message:'Old native error'});await flush();assert.equal(h.engine.snapshot.voice,'af_nicole');assert.notEqual(h.engine.snapshot.phase,'complete');assert.notEqual(h.engine.snapshot.phase,'error');h.engine.stop();
+});
+
+test('Voice validation, native preflight and stale session rejection preserve active audio',async()=>{
+ const h=await playingSwitchHarness({nativeTransport:async()=>({macVoices:[],macError:'The Mac helper is unavailable.'})}),stream=h.streams[0],worker=h.workers[0];
+ await assert.rejects(h.engine.changeVoice('no-such-voice'),/not available/);
+ await assert.rejects(h.engine.changeVoice('af_nicole','old-session'),/session ended/);
+ await assert.rejects(h.engine.changeVoice('mac:macos-start-speaking'),/Mac helper is unavailable/);
+ assert.equal(h.engine.snapshot.voice,'af_sarah');assert.equal(h.engine.snapshot.phase,'playing');assert.equal(worker.terminated,false);assert.equal(stream.position,7);assert.equal(stream.audio.paused,false);h.engine.stop();
+});
+
+test('Rapid changes and a delayed native preflight cannot revive an older voice',async()=>{
+ let finishCatalog;const h=await playingSwitchHarness({nativeTransport:()=>new Promise(resolve=>{finishCatalog=resolve;})});
+ const toNative=h.engine.changeVoice('mac:macos-start-speaking');const rejected=assert.rejects(toNative,/session ended/);
+ await h.engine.changeVoice('af_nicole');await h.engine.changeVoice('bm_fable');finishCatalog(availableNative);await rejected;
+ assert.equal(h.engine.snapshot.voice,'bm_fable');assert.equal(h.workers[1].terminated,true);const current=h.workers[2];current.ready();assert.equal(current.messages.at(-1).voice,'bm_fable');assert.equal(current.messages.at(-1).text,'Second sentence should continue here.');
+ h.workers[0].audio(2,6);h.workers[1].audio(0,6);await flush();assert.equal(h.streams.at(-1).end,0);h.engine.stop();
+});
+
+test('Completed voice changes stay paused; expired and failed readings reject without relabeling',async()=>{
+ for(const release of ['retained','expired','failed']){
+  const h=engineHarness();await h.engine.start({text:'Short passage.',voice:'af_sarah'},'voice-session');h.workers[0].ready();h.workers[0].audio(0,6);await flush();
+  if(release==='failed'){h.workers[0].onerror?.({message:'Voice error'});h.engine.stop();await h.engine.start({text:'Fail this.'},'voice-session');h.workers[1].onerror({message:'Voice error'});}
+  else{h.streams[0].position=6;h.streams[0].audio.ended=true;h.advance(1);if(release==='expired')h.advance(120001);}
+  if(release==='retained'){await h.engine.changeVoice('af_nicole');assert.equal(h.engine.snapshot.phase,'paused');assert.equal(h.engine.snapshot.voice,'af_nicole');assert.equal(h.workers.length,1);}
+  else{await assert.rejects(h.engine.changeVoice('af_nicole'),/expired/);assert.equal(h.engine.snapshot.voice,'af_sarah');}
+  h.engine.stop();
+ }
+});
+
+async function voiceBackgroundHarness({active=true,engineError}={}){
+ const listeners={},events=name=>({addListener(fn){listeners[name]=fn;}}),calls=[],saved={voice:'af_sarah'},published=[];let exists=active;
+ let state={phase:'paused',sessionId:'retained-session',sourceId:'retained-source',voice:'af_sarah',speed:1,elapsedSec:7,durationSec:30,bufferedSec:10,revision:1};
+ const chrome={
+  runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onInstalled:events('installed'),onMessage:events('message'),sendMessage:async m=>{if(m.target!=='engine')return;calls.push(m);if(m.action==='voice'){if(engineError)return{error:engineError};state={...state,voice:m.voice,revision:state.revision+1};}return{ok:true,snapshot:state};}},
+  storage:{session:{get:async()=>({readerOwnerTab:42,readerSnapshot:{pagePlayerAvailable:true}}),set:async values=>{if(values.readerSnapshot)published.push(values.readerSnapshot);}},sync:{get:async()=>saved,set:async values=>Object.assign(saved,values)}},
+  offscreen:{hasDocument:async()=>exists,closeDocument:async()=>{exists=false;},createDocument:async()=>{exists=true;},Reason:{WORKERS:'WORKERS'}},
+  tabs:{query:async()=>[{id:42}],sendMessage:async(id,message)=>{calls.push({tab:id,...message});},onRemoved:events('removed'),onUpdated:events('updated')},
+  contextMenus:{onClicked:events('context'),removeAll(){},create(){}},commands:{onCommand:events('command')},scripting:{executeScript:async()=>{throw Error('Voice changes must not re-extract source.');}},
+ };
+ vm.runInNewContext(backgroundCode,{chrome,defineBackground:fn=>fn(),crypto,TextEncoder,setTimeout,clearTimeout,console});
+ const command=(action,fields={})=>new Promise(resolve=>listeners.message({channel:'local-reader-v2',target:'background',action,...fields},{id:'test-extension'},resolve));
+ return{command,calls,saved,published,listeners,get exists(){return exists;}};
+}
+
+test('Background voice command persists its accepted preference and publishes the retained session to its owner',async()=>{
+ const h=await voiceBackgroundHarness();const response=await h.command('voice',{voice:'af_nicole',sessionId:'retained-session'});
+ assert.equal(response.snapshot.voice,'af_nicole');assert.equal(response.snapshot.phase,'paused');assert.equal(response.snapshot.sourceId,'retained-source');assert.equal(response.snapshot.pagePlayerAvailable,true);assert.equal(h.saved.voice,'af_nicole');assert.equal(h.saved.voiceName,'Nicole · American');
+ assert.deepEqual(h.calls.filter(c=>c.target==='engine').map(c=>c.action),['get','voice']);assert.equal(h.calls.find(c=>c.action==='voice').sessionId,'retained-session');assert(h.calls.some(c=>c.tab===42&&c.snapshot?.voice==='af_nicole'));assert.equal(h.exists,true);
+});
+
+test('Rejected background voice changes leave active state, resources and preference untouched',async()=>{
+ for(const fields of [{voice:'no-such-voice'},{voice:'af_nicole',sessionId:'stale'},{voice:'mac:macos-start-speaking'}]){
+  const h=await voiceBackgroundHarness({engineError:'The Mac helper is unavailable.'});const result=await h.command('voice',fields);
+  assert(result.error);assert.equal(h.saved.voice,'af_sarah');assert.equal(h.exists,true);assert.equal((await h.command('get')).snapshot.phase,'paused');assert.equal((await h.command('get')).snapshot.voice,'af_sarah');assert.equal(h.calls.some(c=>['stop','start'].includes(c.action)),false);
+ }
+});
+
+test('Idle voice choice only saves a preference; rapid popup choices apply in order without launching or extracting',async()=>{
+ const idle=await voiceBackgroundHarness({active:false});const preference=await idle.command('voice',{voice:'bf_lily'});
+ assert.equal(idle.saved.voice,'bf_lily');assert.equal(preference.snapshot.phase,'idle');assert.equal(idle.exists,false);assert.equal(idle.calls.some(c=>c.target==='engine'),false);
+ const h=await voiceBackgroundHarness();const responses=await Promise.all(['af_nicole','bm_fable'].map(voice=>h.command('voice',{voice,sessionId:'retained-session'})));
+ assert.deepEqual(responses.map(r=>r.snapshot.voice),['af_nicole','bm_fable']);assert.equal(h.saved.voice,'bm_fable');assert.equal((await h.command('get')).snapshot.voice,'bm_fable');
+});
+
+test('A native Stop timeout never starts overlapping Kokoro; closing during Stop cancels the pending switch',async()=>{
+ for(const close of [false,true]){
+  const h=engineHarness({nativeTransport:async()=>({ok:true})});await h.engine.start({text:switchText,voice:'mac:macos-start-speaking'},'voice-session');
+  const changing=h.engine.changeVoice('af_nicole');const rejection=assert.rejects(changing,close?/session ended/:/did not confirm Stop/);
+  if(close)h.engine.stop();else h.timeouts.find(t=>t.ms===5000&&!t.cleared).fn();await rejection;
+  assert.equal(h.workers.length,0);assert.equal(h.engine.snapshot.voice,close?'af_sarah':'mac:macos-start-speaking');assert.equal(h.engine.snapshot.phase,close?'idle':'preparing');h.engine.stop();
+ }
+});
+
+test('Changing a stopped native reading waits for Play and still retains the source',async()=>{
+ const calls=[],h=engineHarness({nativeTransport:async(action,fields)=>{calls.push({action,...fields});return{ok:true};}});await h.engine.start({text:switchText,voice:'mac:macos-start-speaking',sourceId:'source'},'voice-session');
+ const id=calls.find(c=>c.action==='native-speak').id;await h.engine.pause();h.engine.handleNativeMessage({type:'cancelled',id});await flush();
+ await h.engine.changeVoice('bf_lily');assert.equal(h.engine.snapshot.phase,'paused');assert.equal(h.engine.snapshot.sourceId,'source');assert.equal(h.workers.length,0);
+ await h.engine.resume();h.workers[0].ready();assert.equal(h.workers[0].messages.at(-1).text,'First sentence is already behind us.');assert.equal(h.workers[0].messages.at(-1).voice,'bf_lily');h.engine.stop();
+});
+
+test('Stale engine snapshots cannot replace the new voice within the same session',async()=>{
+ const h=await voiceBackgroundHarness();await h.command('voice',{voice:'af_nicole',sessionId:'retained-session'});
+ h.listeners.message({channel:'local-reader-v2',target:'background',action:'engine-state',snapshot:{phase:'playing',sessionId:'retained-session',sourceId:'retained-source',voice:'af_sarah',speed:1,revision:1}},{id:'test-extension',url:'chrome-extension://test-extension/offscreen.html'},()=>{});
+ assert.equal((await h.command('get')).snapshot.voice,'af_nicole');assert.equal((await h.command('get')).snapshot.revision,2);assert.equal(h.saved.voice,'af_nicole');
 });

@@ -14,6 +14,7 @@ export async function resumeReader(sessionId?: string): Promise<ReaderSnapshot |
 export async function stopReader(): Promise<void> { await command('stop'); }
 export async function seekReader(seconds: number, sessionId?: string): Promise<ReaderSnapshot | undefined> { return (await command('seek', { seconds, sessionId }))?.snapshot; }
 export async function setReaderSpeed(speed: number): Promise<void> { await command('speed', { speed }); }
+export async function changeReaderVoice(voice: string, sessionId?: string): Promise<ReaderSnapshot | undefined> { return (await command('voice', { voice, sessionId }))?.snapshot; }
 export const disposeReader = stopReader;
 export function subscribeReader(callback: (snapshot: ReaderSnapshot) => void): () => void {
   let active = true;

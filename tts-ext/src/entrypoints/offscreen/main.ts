@@ -12,6 +12,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message.action === 'diagnostics') { respond({ diagnostics: engine.diagnostics }); return; }
   if (message.action === 'native-message') { engine.handleNativeMessage(message.message as NativeHostResponse); respond({ ok: true }); return; }
   if (message.action === 'start') { void engine.start(message.request, message.sessionId, message.requestedAt); respond({ ok: true }); return; }
+  if (message.action === 'voice') { void engine.changeVoice(message.voice, message.sessionId).then(() => respond({ ok: true, snapshot: currentSnapshot() })).catch(error => respond({ error: error instanceof Error ? error.message : String(error) })); return true; }
   Promise.resolve(message.action === 'stop' ? engine.stop() : message.action === 'pause' ? engine.pause() : message.action === 'seek' ? engine.seek(message.seconds) : message.action === 'speed' ? engine.setSpeed(message.speed) : engine.resume()).then(() => respond({ ok: true, snapshot: currentSnapshot() })).catch(error => respond({error: error instanceof Error ? error.message : String(error)}));
   return true;
 });

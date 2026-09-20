@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Local Reader</title>
+  <rect x="4" y="4" width="120" height="120" rx="32" fill="#c5ed9c"/>
+  <g fill="none" stroke="#19251c" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M29 36h25a10 10 0 0 1 10 10v46a16 16 0 0 0-12-5H29z"/>
+    <path d="M40 51h10M40 65h10"/>
+    <path d="M80 51a23 23 0 0 1 0 26M93 38a41 41 0 0 1 0 52"/>
+  </g>
+</svg>

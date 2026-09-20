@@ -6,6 +6,7 @@ const moduleOf = async path => {
   return import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
 };
 const position = await moduleOf('speechPosition.ts');
+const { MAX_SPEECH_CHUNK_LENGTH } = await moduleOf('speechSegments.ts');
 const { normalizeSourceFragments } = await moduleOf('sourceText.ts');
 const { validateRequest, isCurrentSnapshot, idleSnapshot } = await moduleOf('readerProtocol.ts');
 
@@ -39,12 +40,42 @@ test('Sentence chunks preserve abbreviations, decimals, duplicates, block tails 
     const sentences=position.sourceSentences(text),chunks=position.sourceSpeechChunks(text);
     assert.equal(chunks.map(c=>c.text).join('').replace(/\s/g,''),text.replace(/\s/g,''));
     for(const c of chunks){
-      assert.equal(c.text.trim(),text.slice(c.start,c.end));assert(c.text.trim().length<=160);
+      assert.equal(c.text.trim(),text.slice(c.start,c.end));assert(c.text.trim().length<=MAX_SPEECH_CHUNK_LENGTH);
       assert(sentences.some(s=>c.start>=s.start&&c.end<=s.end),'no generated clip spans sentences');
       assert.equal(c.text.endsWith('\n'),c.end===text.length||text[c.end]==='\n');
       assert(!/^Dr\.$/.test(c.text.trim()));
     }
     assert.equal(new Set(sentences.map(s=>s.id)).size,sentences.length,'duplicate prose has unique source-offset IDs');
+  }
+});
+
+test('Selected Kennedy Center passage retains full sentences, accurate offsets and paragraph cues', () => {
+  const first='A storm brought down a five-foot piece of ceiling plaster at the John F. Kennedy Center for the Performing Arts this month and its leadership sprang into action.';
+  const second='One thing they did not do was repair the damage.';
+  for(const separator of [' ','\n']){
+    const text=first+separator+second,sentences=position.sourceSentences(text),chunks=position.sourceSpeechChunks(text);
+    assert.deepEqual(sentences.map(s=>text.slice(s.start,s.end)),[first,second]);
+    assert.deepEqual(chunks,[
+      {text:first+(separator==='\n'?'\n':''),start:0,end:161},
+      {text:second+'\n',start:162,end:210},
+    ]);
+    const cues=chunks.map((chunk,index)=>({...chunk,audioStart:index*10,audioEnd:(index+1)*10}));
+    assert.deepEqual(position.spokenPositionAt(cues,sentences,5),{precision:'sentence',start:0,end:161});
+    assert.deepEqual(position.spokenPositionAt(cues,sentences,10),{precision:'sentence',start:162,end:210});
+  }
+});
+
+test('Long sentence fallbacks preserve complete source coverage and sentence highlighting', () => {
+  const text='Dr. Kennedy reviewed '+ 'lengthy reports '.repeat(40)+'before taking action.\nNext paragraph.';
+  const sentences=position.sourceSentences(text),chunks=position.sourceSpeechChunks(text);
+  assert(chunks.length>2);assert.equal(sentences.length,2);
+  assert.equal(chunks.map(c=>c.text).join('').replace(/\s/g,''),text.replace(/\s/g,''));
+  const cues=chunks.map((chunk,index)=>({...chunk,audioStart:index*10,audioEnd:(index+1)*10}));
+  for(const [index,chunk] of chunks.entries()){
+    assert.equal(chunk.text.trim(),text.slice(chunk.start,chunk.end));assert(chunk.text.trim().length<=MAX_SPEECH_CHUNK_LENGTH);
+    const sentence=sentences.find(s=>chunk.start>=s.start&&chunk.end<=s.end);
+    assert(sentence);
+    assert.deepEqual(position.spokenPositionAt(cues,sentences,index*10+5),{precision:'sentence',start:sentence.start,end:sentence.end});
   }
 });
 

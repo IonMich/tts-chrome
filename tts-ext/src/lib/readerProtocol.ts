@@ -29,6 +29,13 @@ export function isCurrentSnapshot(current: ReaderSnapshot, next: ReaderSnapshot)
 export const idleSnapshot = (): ReaderSnapshot => ({ phase: 'idle', voice: 'af_sarah', speed: 1, elapsedSec: 0, durationSec: null, bufferedSec: 0, modelResident: false });
 export const macVoiceValue = (id: string) => `${MAC_VOICE_PREFIX}${id}`;
 export const macVoiceId = (voice: unknown) => typeof voice === 'string' && voice.startsWith(MAC_VOICE_PREFIX) ? voice.slice(MAC_VOICE_PREFIX.length) : undefined;
+/** The selected voice ID owns its label; cached names may belong to an older selection. */
+export function voiceLabel(voice: string): string {
+  if (macVoiceId(voice) === 'macos-start-speaking') return 'Mac voice (Start Speaking)';
+  if (!(VOICES as readonly string[]).includes(voice)) return voice;
+  const name = voice.slice(3).replace(/^./, letter => letter.toUpperCase());
+  return `${name} · ${voice[0] === 'b' ? 'British' : 'American'}`;
+}
 export function validateRequest(request: ReaderRequest): ValidatedReaderRequest {
   const text = typeof request?.text === 'string' ? normalizeSpeechText(request.text) : '';
   if (!text) throw new Error('Select some text, or choose Read page.');
@@ -39,7 +46,7 @@ export function validateRequest(request: ReaderRequest): ValidatedReaderRequest 
   if (!(VOICES as readonly string[]).includes(voice) && nativeId !== 'macos-start-speaking') throw new Error('That voice is not available.');
   const speed = request.speed ?? 1;
   if (!Number.isFinite(speed) || speed < 0.5 || speed > 2) throw new Error('Choose a speed between 0.5× and 2×.');
-  const voiceName = typeof request.voiceName === 'string' && request.voiceName.trim() ? request.voiceName.trim().slice(0, 120) : voice;
+  const voiceName = voiceLabel(voice);
   const sourceId = typeof request.sourceId === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(request.sourceId) ? request.sourceId : undefined;
   return { text, voice, voiceName, speed, ...(sourceId ? { sourceId } : {}) };
 }

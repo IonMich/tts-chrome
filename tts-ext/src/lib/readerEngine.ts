@@ -1,28 +1,64 @@
 import {idleSnapshot,macVoiceId,validateRequest,type ReaderRequest,type ReaderSnapshot,type ValidatedReaderRequest} from './readerProtocol';
-import {splitSpeech} from './speechSegments';
 import {sourceSentences,sourceSpeechChunks,splitSourceChunk,spokenPositionAt,type SourceChunk,type SourceSentence,type SpeechCue} from './speechPosition';
 import {NativeAudioStream} from './nativeAudioStream';
-import type {NativeHostResponse} from './nativeMessaging';
+import {validateNativeSpeech,nativeUnavailableMessage,type NativeHostResponse} from './nativeMessaging';
 export class ReaderEngine {
  private state=idleSnapshot();private worker:Worker|null=null;private context:AudioContext|null=null;private meter:AudioWorkletNode|null=null;private stream:NativeAudioStream|null=null;private request:ValidatedReaderRequest|null=null;private chunks:string[]=[];private index=0;private workerReady=false;private busy=false;private paused=false;private started=false;private done=false;private epoch=0;private startingPlay=false;private finishing=false;private replayExpires=0;
  private sourceChunks:SourceChunk[]=[];private sentences:SourceSentence[]=[];private cues:SpeechCue[]=[];private cueEnd=0;
+ private playbackOffset=0;
+ private nativeStopWaiter:{id:string;finish:(error?:Error)=>void}|null=null;
  private backend:'webgpu'|'wasm'|'native'='webgpu';private nativeRequestId:string|null=null;private nativeSequence=0;private nativeChain=Promise.resolve();private timer:ReturnType<typeof setInterval>|undefined;private pauseTimer:ReturnType<typeof setTimeout>|undefined;private watchdog:ReturnType<typeof setTimeout>|undefined;private metrics:Record<string,any>={};private starvedAt:number|null=null;private waitReason='generation';
  constructor(private notify:(snapshot:ReaderSnapshot)=>void,private assetRoot:URL=new URL('./',location.href),private streamFactory=(context:AudioContext,destination:AudioNode,changed:()=>void,error:(e:unknown)=>void)=>new NativeAudioStream(context,destination,changed,error),private nativeTransport=(action:string,fields:object={})=>chrome.runtime.sendMessage({channel:'local-reader-v2',target:'background',action,...fields})){}
  get snapshot(){return{...this.state};}
  get diagnostics(){return{...this.metrics,replayExpiresAt:this.replayExpires,finishing:this.finishing,clockNow:Date.now(),modelResident:this.worker!==null,audioContextState:this.context?.state??'closed',encodedStreamResident:!!this.stream,retainedSec:this.stream?.retainedSec??0,encodedBytesProduced:this.stream?.encodedBytes??0,retainedStartSec:this.stream?.start??0,preservesPitch:this.stream?.audio.preservesPitch??null,playbackRate:this.stream?.audio.playbackRate??null,snapshot:this.snapshot};}
  private emit(patch:Partial<ReaderSnapshot>={}){this.state={...this.state,...patch};if(this.backend!=='native')this.state.spokenPosition=this.state.sourceId&&this.stream&&['playing','paused'].includes(this.state.phase)?spokenPositionAt(this.cues,this.sentences,this.stream.position):{precision:'unavailable'};this.notify(this.snapshot);}
  private freeWorker(){clearTimeout(this.watchdog);const had=!!this.worker;this.worker?.terminate();this.worker=null;this.workerReady=false;this.busy=false;this.state.modelResident=false;if(had)this.metrics.workerReleasedMs=performance.now()-(this.metrics.requestStartedAt??performance.now());}
- stop(emit=true){this.epoch++;clearInterval(this.timer);clearTimeout(this.pauseTimer);clearTimeout(this.watchdog);this.freeWorker();const nativeRequestId=this.nativeRequestId;this.nativeRequestId=null;if(nativeRequestId)void this.nativeTransport('native-stop',{id:nativeRequestId}).catch(()=>{});this.nativeChain=Promise.resolve();this.stream?.close();this.stream=null;this.chunks=[];this.sourceChunks=[];this.sentences=[];this.cues=[];this.cueEnd=0;this.request=null;this.meter?.disconnect();this.meter=null;void this.context?.close();this.context=null;this.metrics.stopped=true;if(emit){this.state=idleSnapshot();this.notify(this.snapshot);}}
+ stop(emit=true){this.epoch++;this.nativeStopWaiter?.finish(Error('This reading session ended.'));clearInterval(this.timer);clearTimeout(this.pauseTimer);clearTimeout(this.watchdog);this.freeWorker();const nativeRequestId=this.nativeRequestId;this.nativeRequestId=null;if(nativeRequestId)void this.nativeTransport('native-stop',{id:nativeRequestId}).catch(()=>{});this.nativeChain=Promise.resolve();this.stream?.close();this.stream=null;this.chunks=[];this.sourceChunks=[];this.sentences=[];this.cues=[];this.cueEnd=0;this.request=null;this.meter?.disconnect();this.meter=null;void this.context?.close();this.context=null;this.metrics.stopped=true;if(emit){this.state=idleSnapshot();this.notify(this.snapshot);}}
  async start(input:ReaderRequest,sessionId:string,requestedAt=Date.now()){
-  this.stop(false);const request=validateRequest(input),epoch=this.epoch;this.request=request;this.backend=macVoiceId(request.voice)?'native':'webgpu';this.sourceChunks=this.backend!=='native'&&request.sourceId?sourceSpeechChunks(request.text):[];this.sentences=this.sourceChunks.length?sourceSentences(request.text):[];this.chunks=this.backend==='native'?[request.text]:this.sourceChunks.length?this.sourceChunks.map(chunk=>chunk.text):splitSpeech(request.text);this.index=0;this.paused=false;this.started=false;this.done=false;this.finishing=false;this.startingPlay=false;this.replayExpires=0;this.starvedAt=null;this.waitReason='generation';
+  return this.begin(validateRequest(input),sessionId,requestedAt);
+ }
+ private async begin(request:ValidatedReaderRequest,sessionId:string,requestedAt=Date.now(),offset=0,paused=false){
+  this.stop(false);const epoch=this.epoch;this.request=request;this.playbackOffset=offset;this.backend=macVoiceId(request.voice)?'native':'webgpu';this.sourceChunks=this.backend!=='native'?sourceSpeechChunks(request.text).filter(chunk=>chunk.end>offset):[];this.sentences=sourceSentences(request.text);this.chunks=this.backend==='native'?[request.text.slice(offset)]:this.sourceChunks.map(chunk=>chunk.text);this.index=0;this.paused=paused;this.started=false;this.done=false;this.finishing=false;this.startingPlay=false;this.replayExpires=0;this.starvedAt=null;this.waitReason='generation';
   this.metrics={commandRequestedAt:requestedAt,engineTimeOrigin:performance.timeOrigin,requestStartedAt:performance.now(),chunks:[],underruns:[],seeks:[],speedChanges:[],speechSource:this.backend==='native'?'mac-system-speech':'kokoro',method:this.backend==='native'?'Native helper lifecycle callbacks; no browser audio or inferred timeline.':'AudioWorklet first non-silent rendered sample; browser audible estimate, not microphone loopback.'};
-  this.state={...idleSnapshot(),sessionId,sourceId:request.sourceId,spokenPosition:{precision:'unavailable'},voice:request.voice,voiceName:request.voiceName,speed:request.speed,phase:'preparing',totalChunks:this.chunks.length,message:this.backend==='native'?'Starting the Mac voice…':'Preparing the installed voice…',...(this.backend==='native'?{speechMode:'system' as const}:{})};this.emit();
-  if(this.backend==='native'){this.speakSystem(epoch);return;}
+  this.state={...idleSnapshot(),sessionId,sourceId:request.sourceId,spokenPosition:{precision:'unavailable'},voice:request.voice,voiceName:request.voiceName,speed:request.speed,phase:paused?'paused':'preparing',totalChunks:this.chunks.length,message:paused?undefined:this.backend==='native'?'Starting the Mac voice…':'Preparing the installed voice…',...(this.backend==='native'?{speechMode:'system' as const}:{})};this.emit();
+  if(this.backend==='native'){if(!paused)this.speakSystem(epoch);return;}
   try{
    const context=new AudioContext({latencyHint:'playback',sampleRate:24000});this.context=context;await context.audioWorklet.addModule(new URL('audio-meter.js',this.assetRoot));if(epoch!==this.epoch){void context.close();return;}
    this.meter=new AudioWorkletNode(context,'reader-meter');this.meter.connect(context.destination);this.meter.port.onmessage=event=>{if(epoch!==this.epoch||event.data.type!=='first-rendered-sound'||this.metrics.firstRenderedSoundMs!==undefined)return;const stamp=context.getOutputTimestamp(),latency=context.outputLatency||context.baseLatency||0;const estimated=stamp.performanceTime&&stamp.contextTime?stamp.performanceTime+(event.data.contextTime-stamp.contextTime)*1000:performance.now()+latency*1000;Object.assign(this.metrics,{firstRenderedSoundMs:performance.now()-this.metrics.requestStartedAt,firstAudibleEstimateMs:estimated-this.metrics.requestStartedAt,commandToFirstRenderedMs:performance.timeOrigin+performance.now()-this.metrics.commandRequestedAt,commandToFirstAudibleEstimateMs:performance.timeOrigin+estimated-this.metrics.commandRequestedAt,browserOutputLatencySec:latency});};
-   const stream=this.streamFactory(context,this.meter,()=>this.tick(epoch),error=>{if(epoch===this.epoch)this.fail(error);});this.stream=stream;await stream.open();if(epoch!==this.epoch){stream.close();return;}stream.speed(this.state.speed);if(!this.paused)await context.resume();if(epoch!==this.epoch)return;this.spawnWorker(epoch);this.timer=setInterval(()=>this.tick(epoch),250);
+   const stream=this.streamFactory(context,this.meter,()=>this.tick(epoch),error=>{if(epoch===this.epoch)this.fail(error);});this.stream=stream;await stream.open();if(epoch!==this.epoch){stream.close();return;}stream.speed(this.state.speed);if(this.paused)await context.suspend();else await context.resume();if(epoch!==this.epoch)return;this.spawnWorker(epoch);this.timer=setInterval(()=>this.tick(epoch),250);
   }catch(e){if(epoch===this.epoch)this.fail(e);}
+ }
+ /** Keep the original request and source tuple; replace only the audible voice. */
+ async changeVoice(voice:string,sessionId?:string){
+  if(sessionId&&sessionId!==this.state.sessionId)throw Error('This reading session ended.');
+  if(!this.request||!this.state.sessionId)throw Error('This reading has expired. Start a new reading to change its voice.');
+  const request=validateRequest({...this.request,voice,speed:this.state.speed});
+  if(request.voice===this.state.voice)return;
+  const epoch=this.epoch,currentSession=this.state.sessionId;
+  const paused=this.paused||this.state.phase==='paused'||this.state.phase==='complete';
+  let position=this.backend!=='native'&&this.stream?spokenPositionAt(this.cues,this.sentences,this.stream.position):{precision:'unavailable' as const};
+  if(position.precision==='unavailable'&&this.backend!=='native'&&this.stream&&this.stream.position>0)position=spokenPositionAt(this.cues,this.sentences,this.stream.position-0.000001);
+  // Cues retain original text offsets even when the source has no DOM mapping.
+  const offset=this.state.phase==='complete'||this.backend==='native'?0:position.precision!=='unavailable'?position.start:this.sourceChunks[this.index]?.start??this.playbackOffset;
+  if(macVoiceId(voice)){
+   validateNativeSpeech(`${currentSession}:${epoch+1}:${this.nativeSequence+1}`,request.text.slice(offset));
+   const catalog=await this.nativeTransport('native-list');
+   if(!catalog?.macVoices?.some((entry:{id:string})=>entry.id===macVoiceId(voice)))throw Error(catalog?.macError||nativeUnavailableMessage());
+  }
+  if(epoch!==this.epoch)throw Error('This reading session ended.');
+  if(this.nativeRequestId)await this.stopNativeForVoiceChange();
+  if(epoch!==this.epoch)throw Error('This reading session ended.');
+  await this.begin(request,currentSession,Date.now(),offset,paused);
+  if(this.state.phase==='error')throw Error(this.state.error||'The voice could not start.');
+ }
+ private async stopNativeForVoiceChange(){
+  const id=this.nativeRequestId;if(!id)return;
+  await new Promise<void>((resolve,reject)=>{
+   const timer=setTimeout(()=>waiter.finish(Error('The Mac voice did not confirm Stop. Try changing voice again.')),5000);
+   const waiter={id,finish:(error?:Error)=>{if(this.nativeStopWaiter!==waiter)return;clearTimeout(timer);this.nativeStopWaiter=null;error?reject(error):resolve();}};
+   this.nativeStopWaiter=waiter;
+   void this.nativeTransport('native-stop',{id}).then(result=>{if(result?.error)waiter.finish(Error(result.error));}).catch(error=>waiter.finish(error instanceof Error?error:Error(String(error))));
+  });
  }
  private spawnWorker(epoch:number){
   if(this.worker||this.done||this.paused)return;const worker=new Worker(new URL('speech-worker.js',this.assetRoot));this.worker=worker;this.emit({modelResident:true});worker.onerror=e=>{if(worker===this.worker)this.fail(Error(e.message||'The voice could not start.'));};
@@ -47,6 +83,14 @@ export class ReaderEngine {
  }
  private async onNativeMessage(message:NativeHostResponse,epoch:number){
   if(this.backend!=='native'||epoch!==this.epoch||message.id!==this.nativeRequestId)return;
+  if(this.nativeStopWaiter?.id===message.id){
+   if(message.type==='started')return;
+   if(['ended','cancelled','error'].includes(message.type)){
+    clearTimeout(this.watchdog);this.nativeRequestId=null;
+    const error=message.type==='error'?Error(message.message||'The Mac voice could not stop.'):undefined;
+    this.nativeStopWaiter.finish(error);if(error)throw error;return;
+   }
+  }
   if(message.type!=='started'||!this.state.stopping)clearTimeout(this.watchdog);
   if(message.type==='error')throw Error(message.message||'The selected Mac voice is unavailable. Choose another voice or use Kokoro.');
   if(message.type==='started'){if(this.state.stopping)return;this.started=true;this.metrics.systemSpeechStartedMs=performance.now()-this.metrics.requestStartedAt;this.emit({phase:'playing',message:undefined,modelResident:false});return;}
@@ -61,7 +105,7 @@ export class ReaderEngine {
   const id=`${this.state.sessionId}:${epoch}:${++this.nativeSequence}`;this.nativeRequestId=id;this.done=false;this.started=false;
   this.emit({phase:'preparing',message:'Starting the Mac voice…',speechMode:'system',stopping:false,stopReason:undefined,spokenPosition:{precision:'unavailable'},elapsedSec:0,durationSec:null,bufferedSec:0,seekableStartSec:undefined,seekableEndSec:undefined});
   this.watchdog=setTimeout(()=>{if(id===this.nativeRequestId)this.fail(Error('The Mac voice did not start. Close and try again.'));},15000);
-  void this.nativeTransport('native-speak',{id,text:this.request.text}).then(result=>{if(result?.error&&id===this.nativeRequestId)this.fail(Error(result.error));}).catch(error=>{if(id===this.nativeRequestId)this.fail(error);});
+  void this.nativeTransport('native-speak',{id,text:this.request.text.slice(this.playbackOffset)}).then(result=>{if(result?.error&&id===this.nativeRequestId)this.fail(Error(result.error));}).catch(error=>{if(id===this.nativeRequestId)this.fail(error);});
  }
  private pump(){
   const speed=this.state.speed;if(this.paused||this.done||this.busy||!this.workerReady||!this.request||!this.stream||this.stream.ahead/speed>22)return;this.busy=true;this.watchdog=setTimeout(()=>this.fail(Error('Speech generation stopped responding. Close and try again.')),120000);
@@ -85,8 +129,8 @@ export class ReaderEngine {
   try{const result=await this.nativeTransport('native-stop',{id});if(result?.error)throw Error(result.error);}
   catch(error){if(epoch===this.epoch&&id===this.nativeRequestId)this.fail(error);}
   return;
- }if(!this.context||!this.stream||['idle','error'].includes(this.state.phase))return;this.paused=true;this.stream.pause();await this.context.suspend();if(this.done){this.finishing=true;this.replayExpires=Date.now()+120000;}this.emit({phase:'paused',message:undefined,replayExpiresAt:this.replayExpires||undefined});clearTimeout(this.pauseTimer);this.pauseTimer=setTimeout(()=>{if(this.paused){this.freeWorker();this.emit({modelResident:false,message:'Paused · voice memory released. Available audio is retained.'});}},30000);}
- async resume(){if(this.backend==='native'){if(this.request&&['complete'].includes(this.state.phase))this.speakSystem(this.epoch);return;}if(!this.context||!this.stream)return;clearTimeout(this.pauseTimer);this.finishing=false;this.replayExpires=0;this.paused=false;await this.context.resume();if(this.stream.ended)this.stream.seek(this.stream.start);if(this.started)await this.stream.play();if(!this.worker&&!this.done)this.spawnWorker(this.epoch);this.emit({phase:this.started?'playing':'buffering',message:undefined,replayExpiresAt:undefined});this.tick(this.epoch);this.pump();}
+ }if(!this.context||!this.stream||['idle','error'].includes(this.state.phase))return;const epoch=this.epoch;this.paused=true;this.stream.pause();await this.context.suspend();if(epoch!==this.epoch)return;if(this.done){this.finishing=true;this.replayExpires=Date.now()+120000;}this.emit({phase:'paused',message:undefined,replayExpiresAt:this.replayExpires||undefined});clearTimeout(this.pauseTimer);this.pauseTimer=setTimeout(()=>{if(epoch===this.epoch&&this.paused){this.freeWorker();this.emit({modelResident:false,message:'Paused · voice memory released. Available audio is retained.'});}},30000);}
+ async resume(){if(this.backend==='native'){if(this.request&&['complete','paused'].includes(this.state.phase)){if(this.state.phase==='complete')this.playbackOffset=0;this.paused=false;this.speakSystem(this.epoch);}return;}if(!this.context||!this.stream)return;if(this.request&&this.state.sessionId&&this.state.phase==='complete'&&this.playbackOffset>0){await this.begin({...this.request,speed:this.state.speed},this.state.sessionId);return;}const epoch=this.epoch,stream=this.stream;clearTimeout(this.pauseTimer);this.finishing=false;this.replayExpires=0;this.paused=false;await this.context.resume();if(epoch!==this.epoch||stream!==this.stream)return;if(stream.ended)stream.seek(stream.start);if(this.started)await stream.play();if(epoch!==this.epoch)return;if(!this.worker&&!this.done)this.spawnWorker(epoch);this.emit({phase:this.started?'playing':'buffering',message:undefined,replayExpiresAt:undefined});this.tick(epoch);this.pump();}
  seek(seconds:number){if(this.backend==='native')return; if(!this.stream)return;const from=this.stream.position;this.waitReason=seconds>=this.stream.end-.05?'seek':'generation';this.stream.seek(seconds);this.metrics.seeks.push({from,to:this.stream.position,requested:seconds});if(this.finishing||this.done&&this.paused){this.finishing=true;this.replayExpires=Date.now()+120000;this.paused=true;this.emit({phase:'paused',message:undefined,replayExpiresAt:this.replayExpires});}this.tick(this.epoch);}
  setSpeed(speed:number){if(this.backend==='native')return;if(!Number.isFinite(speed)||speed<.5||speed>2)throw Error('Choose a speed from 0.5× to 2×.');this.stream?.speed(speed);this.metrics.speedChanges.push({from:this.state.speed,to:speed,at:this.stream?.position??0});this.emit({speed});this.tick(this.epoch);}
  private fail(error:unknown){const final={...this.state,phase:'error' as const,stopping:false,stopReason:undefined,spokenPosition:{precision:'unavailable' as const},error:error instanceof Error?error.message:String(error),modelResident:false,seekableStartSec:0,seekableEndSec:0};this.metrics.failure=final.error;this.stop(false);this.state=final;this.notify(this.snapshot);}
