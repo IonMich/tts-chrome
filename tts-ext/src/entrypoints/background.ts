@@ -10,6 +10,12 @@ export default defineBackground(() => {
   type Launch = { tabId?: number; cancelled: boolean; cancellation: Promise<never>; cancel: () => void };
   let launch: Launch | undefined;
   let engineSession: string | undefined;
+  let nativeOwnershipUnknown = false;
+  let nativeLease = 0;
+  async function persistNativeOwnership(value: boolean) {
+    await bounded(chrome.storage.session.set({ nativeOwnershipUnknown: value }));
+    nativeOwnershipUnknown = value;
+  }
   // Creation/closure can finish after a timeout. Keep ownership until the actual
   // Chrome operation settles; a timeout must never permit a second acquisition.
   let documentTask: Promise<unknown> = Promise.resolve();
@@ -77,13 +83,19 @@ export default defineBackground(() => {
     await bounded(documentTask);
   }
   async function stop() {
+    nativeLease++;
     engineSession = undefined;
     pagePlayerAvailable = undefined;
     try {
       // Carry the released tuple so a delayed Stop cannot clear a new source.
       await Promise.all([bounded(publish({ ...idleSnapshot(), sessionId: snapshot.sessionId, sourceId: snapshot.sourceId })), releaseDocument()]);
-    } finally {
-      native.close();
+      if (nativeOwnershipUnknown) {
+        await native.shutdown();
+        await persistNativeOwnership(false);
+      }
+    } catch (error) {
+      if (nativeOwnershipUnknown) native.failClosed('A previous Mac voice helper shutdown was not verified. Reload the extension after updating or repairing the helper.');
+      throw error;
     }
   }
   async function activeTab() { return (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id; }
@@ -124,9 +136,11 @@ export default defineBackground(() => {
     } catch (error) {
       ticket.cancel();
       engineSession = undefined;
-      native.close();
+      let nativeError: unknown;
+      if (nativeOwnershipUnknown) try { await native.shutdown(); } catch (shutdownError) { nativeError = shutdownError; }
       try { await releaseDocument(); }
       catch (cleanupError) { throw new Error(`${error instanceof Error ? error.message : String(error)} Cleanup has not completed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
+      if (nativeError) throw nativeError;
       throw error;
     }
   }
@@ -176,8 +190,10 @@ export default defineBackground(() => {
     try {
       await bounded(publish({ ...snapshot, phase: 'error', modelResident: false, error: error instanceof Error ? error.message : String(error) })).catch(() => {});
     } finally {
-      native.close();
+      let shutdown: unknown;
+      if (nativeOwnershipUnknown) try { await native.shutdown(); await persistNativeOwnership(false); } catch (error) { shutdown = error; }
       await releaseDocument().catch(() => {});
+      if (shutdown) throw shutdown;
     }
   }
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
@@ -186,22 +202,37 @@ export default defineBackground(() => {
       void native.listVoices().then(respond);
       return true;
     }
-    if (message.action === 'native-speak' || message.action === 'native-stop') {
+    if (message.action === 'native-speak' || message.action === 'native-stop' || message.action === 'native-shutdown') {
       if (sender.url !== chrome.runtime.getURL('offscreen.html')) {
         respond({ error: 'The Mac voice request was rejected.' });
         return;
       }
-      try {
+      void (async()=>{ try {
         if (message.action === 'native-speak') {
           if (!engineSession || typeof message.id !== 'string' || !message.id.startsWith(engineSession + ':')) throw new CancelledLaunch();
+          const expectedSession = engineSession;
+          const lease = ++nativeLease;
+          const catalog = await native.listVoices();
+          if (!catalog.macVoices.length) throw new Error(catalog.macError || 'Update the Mac voice helper before reading.');
+          if (engineSession !== expectedSession || !message.id.startsWith(expectedSession + ':')) throw new CancelledLaunch();
+          nativeOwnershipUnknown = true;
+          await bounded(chrome.storage.session.set({ nativeOwnershipUnknown: true }));
+          if (engineSession !== expectedSession || lease !== nativeLease || !message.id.startsWith(expectedSession + ':')) {
+            if (lease === nativeLease) await persistNativeOwnership(false);
+            throw new CancelledLaunch();
+          }
           native.speak(message.id, message.text);
         }
         else if (snapshot.sessionId && typeof message.id === 'string' && message.id.startsWith(snapshot.sessionId + ':')) native.stop(message.id);
+        if (message.action === 'native-shutdown') {
+          if (message.sessionId && message.sessionId !== engineSession) throw new CancelledLaunch();
+          if (nativeOwnershipUnknown) { await native.shutdown(); await persistNativeOwnership(false); }
+        }
         respond({ ok: true });
       } catch (error) {
         respond({ error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
+      } })();
+      return true;
     }
     if (message.action === 'engine-state') {
       if (sender.url !== chrome.runtime.getURL('offscreen.html')) return;
@@ -271,7 +302,9 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener(releaseOwner);
   chrome.tabs.onUpdated.addListener((id, change) => { if (change.status === 'loading') releaseOwner(id); });
   lifecycle = (async () => {
-    const saved = await bounded(chrome.storage.session.get(['readerOwnerTab', 'readerSnapshot']));
+    const saved = await bounded(chrome.storage.session.get(['readerOwnerTab', 'readerSnapshot', 'nativeOwnershipUnknown']));
+    nativeOwnershipUnknown = saved.nativeOwnershipUnknown === true;
+    if (nativeOwnershipUnknown) native.failClosed('A previous Mac voice helper shutdown was not verified. Reload the extension after updating or reinstalling the Mac voice helper.');
     ownerTab = typeof saved.readerOwnerTab === 'number' ? saved.readerOwnerTab : undefined;
     pagePlayerAvailable = saved.readerSnapshot?.pagePlayerAvailable;
     const exists = await bounded(chrome.offscreen.hasDocument());
@@ -282,5 +315,9 @@ export default defineBackground(() => {
       ownerTab = undefined;
       await bounded(chrome.storage.session.set({ readerOwnerTab: null }));
     }
-  })().catch(() => { snapshot = idleSnapshot(); ownerTab = undefined; engineSession = undefined; });
+  })().catch(() => {
+    snapshot = idleSnapshot(); ownerTab = undefined; engineSession = undefined;
+    nativeOwnershipUnknown = true;
+    native.failClosed('Native ownership recovery failed. Reload the extension before reading again.');
+  });
 });

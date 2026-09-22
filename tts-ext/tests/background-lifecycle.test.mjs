@@ -9,6 +9,7 @@ const built = await build({ entryPoints: [root+'src/entrypoints/background.ts'],
 const code = built.outputFiles[0].text;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const flush = async () => { for (let i=0;i<8;i++) await new Promise(r=>setImmediate(r)); };
+const supportedCapabilities=id=>({type:'capabilities',id,available:true,mode:'system-speech',canStop:true,canPause:false,canSeek:false,hasPcm:false,protocolVersion:2,shutdownAcknowledgement:1});
 
 // Only deterministic Chrome/engine fakes: no speech, model, browser or native process.
 function harness({ extract, create, close, start, storage, recovery, retained } = {}) {
@@ -16,7 +17,7 @@ function harness({ extract, create, close, start, storage, recovery, retained } 
   const event = name => ({ addListener: fn => { listeners[name]=fn; } });
   const chrome={
     runtime:{id:'test',getURL:p=>'chrome-extension://test/'+p,onInstalled:event('installed'),onMessage:event('message'),
-      connectNative:()=>({postMessage:m=>nativeMessages.push(m),disconnect(){},onMessage:{addListener(){}},onDisconnect:{addListener(){}}}),
+      connectNative:()=>{let receive;return{postMessage:m=>{nativeMessages.push(m);if(m.action==='capabilities')queueMicrotask(()=>receive?.(supportedCapabilities(m.id)));if(m.action==='shutdown')queueMicrotask(()=>receive?.({type:'shutdown-complete',id:m.id,stopped:true,processExited:true}));},disconnect(){},onMessage:{addListener(fn){receive=fn;}},onDisconnect:{addListener(){}}};},
       sendMessage:async m=>{if(m.target!=='engine')return;events.push({action:m.action,...m});if(m.action==='get')return{snapshot:retained};if(m.action==='start')return await start?.(m)??{ok:true};return{ok:true};}},
     storage:{session:{get:async()=>await recovery?.()??(retained?{readerOwnerTab:1}:{}),set:async v=>{await storage?.(v);}},sync:{get:async()=>({})}},
     offscreen:{Reason:{WORKERS:'WORKERS'},hasDocument:async()=>exists,
@@ -86,7 +87,7 @@ test('Cancelled sessions cannot send native speech or publish engine state',asyn
  const h=harness();const original=await h.command('start');const sender={id:'test',url:'chrome-extension://test/offscreen.html'};const id=original.snapshot.sessionId+':1:1';
  const stop=h.command('stop');const rejected=await h.send({action:'native-speak',id,text:'Old speech'},sender);assert(rejected.error);assert.equal(h.nativeMessages.length,0);await stop;
  const newer=await h.command('start',2);h.listeners.message({channel:'local-reader-v2',target:'background',action:'engine-state',snapshot:{...original.snapshot,phase:'error',error:'Stale'}},sender,()=>{});await flush();assert.equal((await h.command('get')).snapshot.sessionId,newer.snapshot.sessionId);assert.equal(h.exists,true);
- assert((await h.send({action:'native-speak',id:newer.snapshot.sessionId+':1:1',text:'Current speech'},sender)).ok);assert.equal(h.nativeMessages.length,1);await h.command('stop');
+ assert((await h.send({action:'native-speak',id:newer.snapshot.sessionId+':1:1',text:'Current speech'},sender)).ok);assert.equal(h.nativeMessages.filter(m=>m.action==='speak').length,1);await h.command('stop');
 });
 
 test('Closing the old owner during handoff does not cancel the new tab reading',async()=>{
@@ -98,13 +99,13 @@ test('Closing the tab with pending extraction cancels its launch',async()=>{
  const gate=deferred(),h=harness({extract:()=>gate.promise});const reading=h.command('read-page',2);await flush();h.listeners.updated(2,{status:'loading'});assert((await reading).cancelled);await h.command('get');assert.equal(h.starts().length,0);gate.resolve({text:'Late.'});await flush();assert.equal(h.starts().length,0);
 });
 
-test('Stalled initial recovery is bounded and cannot prevent Stop indefinitely',async()=>{
- const gate=deferred(),h=harness({recovery:()=>gate.promise});const stop=h.command('stop');await flush();await h.timeout();assert((await stop).ok);gate.resolve({readerOwnerTab:99});await flush();assert.equal((await h.command('get')).snapshot.phase,'idle');
+test('Stalled initial recovery fails closed before Stop can release unknown native ownership',async()=>{
+ const gate=deferred(),h=harness({recovery:()=>gate.promise});const stop=h.command('stop');await flush();await h.timeout();assert.match((await stop).error,/ownership recovery failed/i);gate.resolve({readerOwnerTab:99});await flush();assert.equal((await h.command('get')).snapshot.phase,'error');
 });
 
 test('Recovery restores the native session gate for retained speech and rejects another session',async()=>{
  const retained={phase:'playing',sessionId:'retained',voice:'mac:macos-start-speaking',speed:1,elapsedSec:0,durationSec:null,bufferedSec:0,modelResident:false,speechMode:'system'};
  const h=harness({retained});await h.command('get');const sender={id:'test',url:'chrome-extension://test/offscreen.html'};
  assert((await h.send({action:'native-speak',id:'retained:1:2',text:'Replay'},sender)).ok);
- assert((await h.send({action:'native-speak',id:'other:1:2',text:'Stale'},sender)).error);assert.equal(h.nativeMessages.length,1);await h.command('stop');
+ assert((await h.send({action:'native-speak',id:'other:1:2',text:'Stale'},sender)).error);assert.equal(h.nativeMessages.filter(m=>m.action==='speak').length,1);await h.command('stop');
 });

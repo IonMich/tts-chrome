@@ -46,7 +46,10 @@ export class ReaderEngine {
    if(!catalog?.macVoices?.some((entry:{id:string})=>entry.id===macVoiceId(voice)))throw Error(catalog?.macError||nativeUnavailableMessage());
   }
   if(epoch!==this.epoch)throw Error('This reading session ended.');
-  if(this.nativeRequestId)await this.stopNativeForVoiceChange();
+  if(this.backend==='native'){
+   if(this.nativeRequestId)await this.stopNativeForVoiceChange();
+   const result=await this.nativeTransport('native-shutdown',{sessionId:currentSession});if(result?.error)throw Error(result.error);
+  }
   if(epoch!==this.epoch)throw Error('This reading session ended.');
   await this.begin(request,currentSession,Date.now(),offset,paused);
   if(this.state.phase==='error')throw Error(this.state.error||'The voice could not start.');

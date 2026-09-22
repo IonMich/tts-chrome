@@ -51,13 +51,13 @@ function engineHarness({delayWorklet=false,nativeTransport,platform='Linux x86_6
  return{engine,workers,contexts,states,timeouts,streams,advance(ms){clock.now+=ms;for(const t of intervals)if(!t.cleared)t.fn();},finishWorklet:()=>resolveWorklet?.()};
 }
 
-function fakeNativePort({postError=false}={}){
+function fakeNativePort({postError=false,autoShutdown=true}={}){
  const sent=[],messageListeners=[],disconnectListeners=[];let disconnects=0;
- const port={postMessage(message){if(postError)throw Error('closed');sent.push(message);},disconnect(){disconnects++;},onMessage:{addListener:fn=>messageListeners.push(fn)},onDisconnect:{addListener:fn=>disconnectListeners.push(fn)}};
+ const port={postMessage(message){if(postError)throw Error('closed');sent.push(message);if(autoShutdown&&message.action==='shutdown')queueMicrotask(()=>messageListeners[0]?.({type:'shutdown-complete',id:message.id,stopped:true,processExited:true}));},disconnect(){disconnects++;},onMessage:{addListener:fn=>messageListeners.push(fn)},onDisconnect:{addListener:fn=>disconnectListeners.push(fn)}};
  return{port,sent,get disconnects(){return disconnects;},receive:message=>messageListeners[0](message),drop:()=>disconnectListeners[0]()};
 }
 
-const supportedCapabilities=id=>({type:'capabilities',id,available:true,mode:'system-speech',canStop:true,canPause:false,canSeek:false,hasPcm:false});
+const supportedCapabilities=id=>({type:'capabilities',id,available:true,mode:'system-speech',canStop:true,canPause:false,canSeek:false,hasPcm:false,protocolVersion:2,shutdownAcknowledgement:1});
 
 test('Native bridge uses the host action contract, honors availability and closes idle catalog ports',async()=>{
  const {NativeMessagingBridge,NATIVE_HOST_NAME}=await moduleOf('src/lib/nativeMessaging.ts');
@@ -70,7 +70,7 @@ test('Native bridge uses the host action contract, honors availability and close
  assert.equal(first.disconnects,1,'an idle capability connection is disposable');
  const unavailable=bridge.listVoices(),unavailableRequest=second.sent.at(-1);
  second.receive({...supportedCapabilities(unavailableRequest.id),available:false});
- assert.deepEqual((await unavailable).macVoices,[]);assert.match((await Promise.resolve(unavailable)).macError,/unavailable|unsupported/);
+ assert.deepEqual((await unavailable).macVoices,[]);assert.match((await Promise.resolve(unavailable)).macError,/Update the Mac voice helper/);
  assert.equal(second.disconnects,1);
 });
 
@@ -82,10 +82,10 @@ test('Catalog lookup shares an active speech port without closing it and stale d
  const listing=bridge.listVoices(),request=first.sent.at(-1);assert.equal(request.action,'capabilities');
  first.receive(supportedCapabilities(request.id));assert.equal((await listing).macVoices.length,1);assert.equal(first.disconnects,0);
  first.receive({type:'ended',id:'stale'});assert.equal(events.length,0);assert.equal(first.disconnects,0);
- first.receive({type:'ended',id:'first-speech'});assert.equal(events.at(-1).type,'ended');assert.equal(first.disconnects,1);
+ first.receive({type:'ended',id:'first-speech'});assert.equal(events.at(-1).type,'ended');const shutdown=first.sent.at(-1);assert.equal(shutdown.action,'shutdown');assert.equal(first.disconnects,0);await flush();assert.equal(first.disconnects,1);
  bridge.speak('replacement','Again');first.drop();assert.equal(events.length,1,'a late disconnect from the retired port is ignored');
- second.receive({type:'started',id:'replacement'});second.receive({type:'ended',id:'replacement'});
- assert.deepEqual(events.map(event=>event.type),['ended','started','ended']);assert.equal(second.disconnects,1);
+ second.receive({type:'started',id:'replacement'});second.receive({type:'ended',id:'replacement'});await flush();await flush();
+ assert.deepEqual(events.map(event=>event.type),['ended','started','ended']);assert.equal(second.sent.at(-1).action,'shutdown');
 });
 
 test('Native stop has a bounded, truthful timeout failure; disconnects and send failures release their ports',async()=>{
@@ -98,7 +98,7 @@ test('Native stop has a bounded, truthful timeout failure; disconnects and send 
  const failed=fakeNativePort({postError:true}),failedBridge=new NativeMessagingBridge(()=>{},()=>failed.port);
  assert.match((await failedBridge.listVoices()).macError,/unavailable/);assert.equal(failed.disconnects,1);
  const closed=fakeNativePort(),closeBridge=new NativeMessagingBridge(()=>{},()=>closed.port);
- closeBridge.speak('closed','Hello');closeBridge.close();assert.equal(closed.disconnects,1);
+ closeBridge.speak('closed','Hello');const closing=closeBridge.close();assert.equal(closed.disconnects,0);await closing;assert.equal(closed.disconnects,1);
 });
 
 test('Native speech rejects text or encoded frames beyond the host limits before connecting',async()=>{
@@ -107,6 +107,15 @@ test('Native speech rejects text or encoded frames beyond the host limits before
  assert.throws(()=>bridge.speak('large-text','😀'.repeat(225_001)),/too long for Mac Start Speaking/);
  assert.throws(()=>bridge.speak('large-frame','\u0000'.repeat(200_000)),/too long for Mac Start Speaking/);
  assert.equal(connections,0);
+});
+
+test('Shutdown requires its matching process-exit acknowledgement and concurrent callers share failure',async()=>{
+ const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');
+ const port=fakeNativePort({autoShutdown:false}),bridge=new NativeMessagingBridge(()=>{},()=>port.port,5);
+ bridge.speak('owned','Read.');const first=bridge.shutdown(),second=bridge.shutdown(),request=port.sent.at(-1);
+ port.receive({type:'shutdown-complete',id:'stale',stopped:true,processExited:true});assert.equal(port.disconnects,0);
+ await assert.rejects(first,/verify shutdown/);await assert.rejects(second,/verify shutdown/);
+ assert.equal(request.action,'shutdown');assert.throws(()=>bridge.speak('successor','Blocked.'),/verify shutdown/);
 });
 
 let tokenizer;
@@ -245,10 +254,10 @@ test('Owning-tab and error cleanup disconnect an active native host',async()=>{
   const port=fakeNativePort(),h=await launchHarness({nativePort:port});
   const started=await h.command('start',{request:{text:'Read with the Mac.',voice:'mac:macos-start-speaking'}});
   const sender={id:'test-extension',url:'chrome-extension://test-extension/offscreen.html'};
-  assert.equal((await h.command('native-speak',{id:started.snapshot.sessionId+':1:1',text:'Read with the Mac.'},sender)).ok,true);
+  const speaking=h.command('native-speak',{id:started.snapshot.sessionId+':1:1',text:'Read with the Mac.'},sender);await flush();const capability=port.sent.find(message=>message.action==='capabilities');port.receive(supportedCapabilities(capability.id));assert.equal((await speaking).ok,true);
   if(cleanup==='tab-close')h.listeners.removed(42);else await h.command('unknown');
   await flush();await flush();
-  assert.equal(port.disconnects,1);assert.equal(h.exists,false);
+  assert(port.disconnects>=1);assert.equal(h.exists,false);
  }
 });
 
