@@ -40,7 +40,7 @@ Click the voice's portrait or name in the player or popup. Your choice applies t
 | **Highlighting** | Sentence- or chunk-level cues from generated audio | Unavailable because the system route supplies no speech timing |
 | **Setup** | Included in the built extension; WebGPU preferred, WASM fallback | Separate helper registered to the documented extension ID |
 
-Additional Mac playback controls are tracked in [issue #1](https://github.com/IonMich/tts-chrome/issues/1). Confirming native speech shutdown before replacement remains tracked in [issue #15](https://github.com/IonMich/tts-chrome/issues/15).
+Additional Mac playback controls are tracked in [issue #1](https://github.com/IonMich/tts-chrome/issues/1). Replacement readings wait for verified Mac helper shutdown. This requires the updated protocol 2 helper; follow the [Mac helper setup and recovery instructions](native/mac/README.md).
 
 ## Build from source
 

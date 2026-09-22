@@ -33,6 +33,12 @@ static NSData *ReadExactly(NSFileHandle *handle, NSUInteger count) {
 @property(nonatomic, strong) NSDate *startDeadline;
 @property(nonatomic) BOOL observedSpeaking;
 @property(nonatomic) BOOL startedEmitted;
+@property(nonatomic, copy) NSString *shutdownId;
+@property(nonatomic, strong) NSDate *stopDeadline;
+@property(nonatomic, strong) NSDate *stopNotBefore;
+@property(nonatomic) BOOL stopping;
+@property(nonatomic) BOOL shutdownReady;
+@property(nonatomic) BOOL inputEnded;
 @end
 
 @implementation AgentDelegate
@@ -72,9 +78,8 @@ static NSData *ReadExactly(NSFileHandle *handle, NSUInteger count) {
     }
   }
   dispatch_async(dispatch_get_main_queue(), ^{
-    [self stopActiveWithType:nil];
-    [self.output closeFile];
-    [NSApp terminate:nil];
+    self.inputEnded = YES;
+    [self beginStopForShutdown:@"connection-eof"];
   });
 }
 
@@ -87,10 +92,24 @@ static NSData *ReadExactly(NSFileHandle *handle, NSUInteger count) {
        message:@"Requests require bounded non-empty string id and action fields."];
     return;
   }
-  if ([action isEqualToString:@"capabilities"]) {
+  if ([action isEqualToString:@"_exit"] && self.shutdownReady &&
+      [requestId isEqualToString:self.shutdownId]) {
+    [self.output closeFile];
+    [NSApp terminate:nil];
+    return;
+  }
+  if (self.shutdownId) {
+    [self fail:requestId code:@"shutting_down" message:@"The speech helper is shutting down."];
+    return;
+  }
+  if ([action isEqualToString:@"shutdown"]) {
+    [self beginStopForShutdown:requestId];
+  } else if ([action isEqualToString:@"capabilities"]) {
     BOOL supported = SpeechRouteAvailable();
     [self send:@{ @"type": @"capabilities", @"id": requestId,
                   @"mode": @"system-speech", @"available": @(supported),
+                  @"protocolVersion": @2, @"shutdownAcknowledgement": @1,
+                  @"pid": @(NSProcessInfo.processInfo.processIdentifier),
                   @"canStop": @(supported), @"canPause": @NO, @"canSeek": @NO,
                   @"hasPcm": @NO }];
   } else if ([action isEqualToString:@"listVoices"]) {
@@ -105,7 +124,7 @@ static NSData *ReadExactly(NSFileHandle *handle, NSUInteger count) {
     if (![self.activeId isEqualToString:requestId]) {
       [self fail:requestId code:@"not_active" message:@"That speech request is not active."];
     } else {
-      [self stopActiveWithType:@"cancelled"];
+      [self beginStopForShutdown:nil];
     }
   } else {
     [self fail:requestId code:@"unsupported_action"
@@ -123,7 +142,10 @@ static NSData *ReadExactly(NSFileHandle *handle, NSUInteger count) {
   if (!SpeechRouteAvailable()) {
     [self fail:requestId code:@"unavailable" message:@"AppKit Start Speaking is unavailable."]; return;
   }
-  [self stopActiveWithType:@"cancelled"];
+  if (self.activeId || self.stopping) {
+    [self fail:requestId code:@"busy" message:@"The previous speech request has not stopped."];
+    return;
+  }
   self.activeId = requestId;
   self.observedSpeaking = NO;
   self.startedEmitted = NO;
@@ -136,6 +158,7 @@ static NSData *ReadExactly(NSFileHandle *handle, NSUInteger count) {
 
 - (void)pollSpeech:(NSTimer *)timer {
   (void)timer;
+  if (self.stopping) { [self pollStop]; return; }
   if (!self.activeId) return;
   BOOL speaking = [NSApp isSpeaking];
   self.observedSpeaking |= speaking;
@@ -154,12 +177,50 @@ static NSData *ReadExactly(NSFileHandle *handle, NSUInteger count) {
   }
 }
 
-- (void)stopActiveWithType:(NSString *)type {
-  if (!self.activeId) return;
-  NSString *stoppedId = self.activeId;
+// A stop call is only a request. In particular, a not-yet-started utterance
+// can still report isSpeaking == NO; retain ownership through its startup window.
+- (void)beginStopForShutdown:(NSString *)shutdownId {
+  if (shutdownId) self.shutdownId = shutdownId;
+  if (!self.stopping) {
+    self.stopping = YES;
+    self.stopDeadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+    self.stopNotBefore = self.activeId && !self.observedSpeaking ? self.startDeadline : nil;
+    [self.speechTimer invalidate];
+    self.speechTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 target:self
+                                                      selector:@selector(pollSpeech:)
+                                                      userInfo:nil repeats:YES];
+  }
+  [self pollStop];
+}
+
+- (void)pollStop {
   if ([NSApp respondsToSelector:@selector(stopSpeaking:)]) [NSApp stopSpeaking:nil];
-  [self clearActive];
-  if (type) [self send:@{ @"type": type, @"id": stoppedId }];
+  BOOL speaking = [NSApp respondsToSelector:@selector(isSpeaking)] && [NSApp isSpeaking];
+  BOOL startupSettled = !self.stopNotBefore || [self.stopNotBefore timeIntervalSinceNow] <= 0;
+  if (!speaking && startupSettled) {
+    NSString *stoppedId = self.activeId;
+    [self clearActive];
+    self.stopping = NO;
+    if (stoppedId && !self.inputEnded) [self send:@{ @"type": @"cancelled", @"id": stoppedId }];
+    if (self.inputEnded) { [NSApp terminate:nil]; return; }
+    if (self.shutdownId) {
+      self.shutdownReady = YES;
+      [self send:@{ @"type": @"shutdown-ready", @"id": self.shutdownId,
+                    @"pid": @(NSProcessInfo.processInfo.processIdentifier), @"stopped": @YES }];
+      // The relay installs an exact-process exit watch before allowing this exit.
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        [NSApp terminate:nil];
+      });
+    }
+  } else if ([self.stopDeadline timeIntervalSinceNow] <= 0) {
+    [self.speechTimer invalidate];
+    self.speechTimer = nil;
+    if (!self.inputEnded) [self fail:self.shutdownId ?: self.activeId ?: @"protocol"
+      code:@"stop_timeout" message:@"AppKit did not confirm that speech stopped."];
+    // Never publish a successful stop. Process exit on failed/abandoned shutdown
+    // is cleanup only, and the extension keeps its uncertain-shutdown fence.
+    if (self.shutdownId || self.inputEnded) [NSApp terminate:nil];
+  }
 }
 
 - (void)clearActive {
