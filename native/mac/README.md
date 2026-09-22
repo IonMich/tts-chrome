@@ -39,8 +39,8 @@ clears the record promptly; errors reading or writing ownership fail closed.
 
 If the background worker is lost while ownership is recorded, this version
 cannot recover the old native connection and deliberately blocks new readings.
-Reloading or reinstalling is not proof of process exit and does not clear the
-record. Recovery requires a maintainer to verify that the previous helper has
+Reloading the extension or reinstalling the Mac helper is not proof of process
+exit and does not clear the record. Recovery requires a maintainer to verify that the previous helper has
 exited before repairing the ownership record; a macOS restart establishes that
 pre-restart helper processes have exited. Do not clear the record merely to retry
 speech. There is no automatic recovery or user-facing recovery control yet.

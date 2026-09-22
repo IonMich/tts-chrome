@@ -15,7 +15,7 @@ export default defineBackground(() => {
   let nativeRequestedId: string | undefined;
   let nativeOwner: { id: string; lease: number } | undefined;
   let nativeTask: Promise<unknown> = Promise.resolve();
-  const nativeRecoveryError = 'A previous Mac voice helper may still be running. Reading is blocked until its process exit is independently verified and the saved ownership marker is repaired. Reloading or reinstalling does not clear this safety block.';
+  const nativeRecoveryError = 'A previous Mac voice helper may still be running. Reading is blocked until its process exit is independently verified and the saved ownership marker is repaired. Reloading the extension or reinstalling the Mac helper does not clear this safety block.';
   function queueNative<T>(work: () => Promise<T>): Promise<T> {
     const result = nativeTask.then(work, work);
     nativeTask = result.then(() => {}, () => {});
