@@ -18,7 +18,7 @@ export type NativeHostResponse =
   | { type: 'error'; id: string; error?: string; message: string };
 
 type PendingCapabilities = { resolve: (value: VoiceCatalog) => void; timer: ReturnType<typeof setTimeout>; port: NativePort };
-type PendingShutdown = { id: string; port: NativePort; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
+type PendingShutdown = { id: string; port: NativePort; resolve: (verified: true) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 type NativePort = Pick<chrome.runtime.Port, 'postMessage' | 'disconnect' | 'onMessage' | 'onDisconnect'>;
 
 export const nativeUnavailableMessage = () => 'The Mac voice helper is unavailable. Install or repair it, then try again.';
@@ -38,9 +38,10 @@ export class NativeMessagingBridge {
   private pendingCapabilities = new Map<string, PendingCapabilities>();
   private activeId: string | null = null;
   private helperOwned = false;
+  private reservedPort: NativePort | null = null;
   private stopTimer: ReturnType<typeof setTimeout> | undefined;
   private pendingShutdown: PendingShutdown | null = null;
-  private shutdownPromise: Promise<void> | null = null;
+  private shutdownPromise: Promise<boolean> | null = null;
   private shutdownFailure: Error | null = null;
 
   constructor(
@@ -89,11 +90,27 @@ export class NativeMessagingBridge {
     }
   }
 
-  speak(id: string, text: string) {
+  async speak(id: string, text: string, isCurrent: () => boolean = () => true, beforePost: () => Promise<void> = async () => {}, timeoutMs = 4000): Promise<void> {
+    if (this.shutdownFailure) throw this.shutdownFailure;
     if (this.shutdownPromise && !this.pendingShutdown) this.shutdownPromise = null;
     const request = validateNativeSpeech(id, text);
+    if (!isCurrent()) throw new Error('The Mac voice request was cancelled before it could start.');
+    if (this.shutdownPromise) await this.shutdownPromise;
+    if (this.helperOwned || this.activeId) throw new Error('The previous Mac voice helper must finish verified shutdown before another reading can start.');
     const port = this.ensurePort();
+    this.reservedPort = port;
+    const catalog = await this.requestCapabilities(port, timeoutMs);
+    if (!catalog.macVoices.length) {
+      if (this.reservedPort === port) this.reservedPort = null;
+      this.closeIfIdle(port);
+      throw new Error(catalog.macError || nativeUnavailableMessage());
+    }
     this.helperOwned = true;
+    await beforePost();
+    if (this.port !== port || this.reservedPort !== port || this.pendingShutdown || this.shutdownFailure || !isCurrent()) {
+      throw this.shutdownFailure || new Error('The Mac voice request was cancelled before it could start; verified helper shutdown is required.');
+    }
+    this.reservedPort = null;
     this.activeId = id;
     clearTimeout(this.stopTimer);
     try { port.postMessage(request); }
@@ -101,6 +118,26 @@ export class NativeMessagingBridge {
       this.disconnectPort(port, false);
       throw new Error(nativeUnavailableMessage());
     }
+  }
+
+  private requestCapabilities(port: NativePort, timeoutMs: number): Promise<VoiceCatalog> {
+    const id = crypto.randomUUID();
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        const pending = this.pendingCapabilities.get(id);
+        if (!pending || pending.port !== port) return;
+        this.pendingCapabilities.delete(id);
+        resolve({ macVoices: [], macError: nativeUnavailableMessage() });
+        this.closeIfIdle(port);
+      }, timeoutMs);
+      this.pendingCapabilities.set(id, { resolve, timer, port });
+      try { port.postMessage({ action: 'capabilities', id }); }
+      catch {
+        clearTimeout(timer); this.pendingCapabilities.delete(id);
+        resolve({ macVoices: [], macError: nativeUnavailableMessage() });
+        this.disconnectPort(port, true);
+      }
+    });
   }
 
   stop(id?: string) {
@@ -116,24 +153,28 @@ export class NativeMessagingBridge {
     clearTimeout(this.stopTimer);
     this.stopTimer = setTimeout(() => {
       if (this.port !== port || this.activeId !== requestId) return;
-      this.shutdownFailure = new Error('The Mac voice helper Stop timed out, so shutdown ownership is unknown. Reload the extension before reading again.');
+      this.shutdownFailure = new Error('The Mac voice helper Stop timed out, so shutdown ownership is unknown. Reading remains blocked until the helper exit is independently verified.');
       this.disconnectPort(port, false);
-      this.emit({ type: 'error', id: requestId, error: 'stop-timeout', message: 'The Mac voice did not confirm Stop. Its connection was closed. Try reading again.' });
+      this.emit({ type: 'error', id: requestId, error: 'stop-timeout', message: 'The Mac voice did not confirm Stop. Reading remains blocked until the helper exit is independently verified.' });
     }, this.stopTimeoutMs);
   }
 
   stopActive() { this.stop(); }
 
-  async shutdown(): Promise<void> {
+  async shutdown(): Promise<boolean> {
     if (this.shutdownFailure) throw this.shutdownFailure;
     if (this.shutdownPromise) return this.shutdownPromise;
     const port = this.port;
+    if (!this.helperOwned) {
+      if (port) this.disconnectPort(port, false);
+      return false;
+    }
     if (!port) {
-      if (this.helperOwned) throw new Error('The Mac voice helper shutdown could not be verified. Reload the extension before reading again.');
-      return;
+      if (this.helperOwned) throw new Error('The Mac voice helper shutdown could not be verified. Reading remains blocked until the helper exit is independently verified.');
+      return false;
     }
     const id = crypto.randomUUID();
-    this.shutdownPromise = new Promise<void>((resolve, reject) => {
+    this.shutdownPromise = new Promise<boolean>((resolve, reject) => {
       const fail = (error: Error) => {
         if (this.pendingShutdown?.id !== id) return;
         clearTimeout(this.pendingShutdown.timer);
@@ -142,7 +183,7 @@ export class NativeMessagingBridge {
         this.disconnectPort(port, false, true);
         reject(error);
       };
-      const timer = setTimeout(() => fail(new Error('The Mac voice helper did not verify shutdown. Reload the extension after updating or repairing the helper.')), this.stopTimeoutMs);
+      const timer = setTimeout(() => fail(new Error('The Mac voice helper did not verify shutdown. Reading remains blocked until the helper exit is independently verified.')), this.stopTimeoutMs);
       this.pendingShutdown = { id, port, resolve, reject: fail, timer };
       try { port.postMessage({ action: 'shutdown', id }); }
       catch { fail(new Error(nativeUnavailableMessage())); }
@@ -154,6 +195,8 @@ export class NativeMessagingBridge {
 
   failClosed(message: string) {
     if (!this.shutdownFailure) this.shutdownFailure = new Error(message);
+    const port = this.port;
+    if (port) this.disconnectPort(port, false, true);
   }
 
   private handleMessage(port: NativePort, message: unknown) {
@@ -170,7 +213,7 @@ export class NativeMessagingBridge {
       this.stopTimer = undefined;
       this.disconnectPort(port, false);
       this.shutdownPromise = null;
-      pending.resolve();
+      pending.resolve(true);
       return;
     }
     if (response.type === 'capabilities' && typeof response.id === 'string') {
@@ -202,12 +245,11 @@ export class NativeMessagingBridge {
     }
     // Retire the old request before notifying: a listener may start a replay.
     this.emit(response as NativeHostResponse);
-    if (response.type === 'ended' || response.type === 'cancelled' || response.type === 'error') void this.shutdown().catch(() => {});
-    else this.closeIfIdle(port);
+    this.closeIfIdle(port);
   }
 
   private closeIfIdle(port: NativePort) {
-    if (this.port === port && !this.helperOwned && !this.activeId && !this.hasPending(port) && !this.pendingShutdown) this.disconnectPort(port, false);
+    if (this.port === port && this.reservedPort !== port && !this.helperOwned && !this.activeId && !this.hasPending(port) && !this.pendingShutdown) this.disconnectPort(port, false);
   }
 
   private hasPending(port: NativePort) {
@@ -217,17 +259,19 @@ export class NativeMessagingBridge {
 
   private handleDisconnect(port: NativePort) {
     void (globalThis as any).chrome?.runtime?.lastError;
+    if (port !== this.port) return;
     if (this.pendingShutdown?.port === port) {
-      this.pendingShutdown.reject(new Error('The Mac voice helper disconnected before shutdown was verified. Reload the extension before reading again.'));
+      this.pendingShutdown.reject(new Error('The Mac voice helper disconnected before shutdown was verified. Reading remains blocked until the helper exit is independently verified.'));
       return;
     }
-    if (this.helperOwned) this.shutdownFailure = new Error('The Mac voice helper disconnected before shutdown was verified. Reload the extension before reading again.');
+    if (this.helperOwned) this.shutdownFailure = new Error('The Mac voice helper disconnected before shutdown was verified. Reading remains blocked until the helper exit is independently verified.');
     this.disconnectPort(port, true, this.helperOwned);
   }
 
   private disconnectPort(port: NativePort, notifyActive: boolean, preserveFailure = false) {
     if (this.port !== port) return;
     this.port = null;
+    if (this.reservedPort === port) this.reservedPort = null;
     clearTimeout(this.stopTimer);
     this.stopTimer = undefined;
     const activeId = this.activeId;

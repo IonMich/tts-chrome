@@ -58,6 +58,7 @@ function fakeNativePort({postError=false,autoShutdown=true}={}){
 }
 
 const supportedCapabilities=id=>({type:'capabilities',id,available:true,mode:'system-speech',canStop:true,canPause:false,canSeek:false,hasPcm:false,protocolVersion:2,shutdownAcknowledgement:1});
+const startSpeech=async(bridge,port,id,text,guard)=>{const started=bridge.speak(id,text,guard);const request=port.sent.at(-1);assert.equal(request.action,'capabilities');port.receive(supportedCapabilities(request.id));await started;};
 
 test('Native bridge uses the host action contract, honors availability and closes idle catalog ports',async()=>{
  const {NativeMessagingBridge,NATIVE_HOST_NAME}=await moduleOf('src/lib/nativeMessaging.ts');
@@ -78,44 +79,71 @@ test('Catalog lookup shares an active speech port without closing it and stale d
  const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');
  const first=fakeNativePort(),second=fakeNativePort(),ports=[first,second],events=[];
  const bridge=new NativeMessagingBridge(message=>events.push(message),()=>ports.shift().port);
- bridge.speak('first-speech','Hello');assert.deepEqual(first.sent.at(-1),{action:'speak',id:'first-speech',text:'Hello'});
+ await startSpeech(bridge,first,'first-speech','Hello');assert.deepEqual(first.sent.at(-1),{action:'speak',id:'first-speech',text:'Hello'});
  const listing=bridge.listVoices(),request=first.sent.at(-1);assert.equal(request.action,'capabilities');
  first.receive(supportedCapabilities(request.id));assert.equal((await listing).macVoices.length,1);assert.equal(first.disconnects,0);
  first.receive({type:'ended',id:'stale'});assert.equal(events.length,0);assert.equal(first.disconnects,0);
- first.receive({type:'ended',id:'first-speech'});assert.equal(events.at(-1).type,'ended');const shutdown=first.sent.at(-1);assert.equal(shutdown.action,'shutdown');assert.equal(first.disconnects,0);await flush();assert.equal(first.disconnects,1);
- bridge.speak('replacement','Again');first.drop();assert.equal(events.length,1,'a late disconnect from the retired port is ignored');
- second.receive({type:'started',id:'replacement'});second.receive({type:'ended',id:'replacement'});await flush();await flush();
- assert.deepEqual(events.map(event=>event.type),['ended','started','ended']);assert.equal(second.sent.at(-1).action,'shutdown');
+ first.receive({type:'ended',id:'first-speech'});assert.equal(events.at(-1).type,'ended');const retiring=bridge.shutdown(),shutdown=first.sent.at(-1);assert.equal(shutdown.action,'shutdown');assert.equal(first.disconnects,0);await retiring;assert.equal(first.disconnects,1);
+ const replacement=bridge.speak('replacement','Again');const replacementCapability=second.sent.at(-1);second.receive(supportedCapabilities(replacementCapability.id));await replacement;first.drop();assert.equal(events.length,1,'a late disconnect from the retired port is ignored');
+ second.receive({type:'started',id:'replacement'});second.receive({type:'ended',id:'replacement'});
+ assert.deepEqual(events.map(event=>event.type),['ended','started','ended']);const retired=bridge.shutdown();assert.equal(second.sent.at(-1).action,'shutdown');await retired;
 });
 
 test('Native stop has a bounded, truthful timeout failure; disconnects and send failures release their ports',async()=>{
  const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');
  const stopped=fakeNativePort(),events=[];const bridge=new NativeMessagingBridge(message=>events.push(message),()=>stopped.port,5);
- bridge.speak('speech','Hello');bridge.stop();assert.deepEqual(stopped.sent.at(-1),{action:'stop',id:'speech'});
+ await startSpeech(bridge,stopped,'speech','Hello');bridge.stop();assert.deepEqual(stopped.sent.at(-1),{action:'stop',id:'speech'});
  await new Promise(resolve=>setTimeout(resolve,15));assert.equal(events.at(-1).type,'error');assert.equal(events.at(-1).error,'stop-timeout');assert.equal(stopped.disconnects,1);
  const dropped=fakeNativePort(),dropEvents=[],dropBridge=new NativeMessagingBridge(message=>dropEvents.push(message),()=>dropped.port);
- dropBridge.speak('dropped','Hello');dropped.drop();assert.equal(dropEvents.at(-1).type,'error');assert.equal(dropped.disconnects,1);
+ await startSpeech(dropBridge,dropped,'dropped','Hello');dropped.drop();assert.equal(dropEvents.at(-1).type,'error');assert.equal(dropped.disconnects,1);
  const failed=fakeNativePort({postError:true}),failedBridge=new NativeMessagingBridge(()=>{},()=>failed.port);
  assert.match((await failedBridge.listVoices()).macError,/unavailable/);assert.equal(failed.disconnects,1);
  const closed=fakeNativePort(),closeBridge=new NativeMessagingBridge(()=>{},()=>closed.port);
- closeBridge.speak('closed','Hello');const closing=closeBridge.close();assert.equal(closed.disconnects,0);await closing;assert.equal(closed.disconnects,1);
+ await startSpeech(closeBridge,closed,'closed','Hello');const closing=closeBridge.close();assert.equal(closed.disconnects,0);await closing;assert.equal(closed.disconnects,1);
 });
 
 test('Native speech rejects text or encoded frames beyond the host limits before connecting',async()=>{
  const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');let connections=0;
  const bridge=new NativeMessagingBridge(()=>{},()=>{connections++;return fakeNativePort().port;});
- assert.throws(()=>bridge.speak('large-text','😀'.repeat(225_001)),/too long for Mac Start Speaking/);
- assert.throws(()=>bridge.speak('large-frame','\u0000'.repeat(200_000)),/too long for Mac Start Speaking/);
+ await assert.rejects(bridge.speak('large-text','😀'.repeat(225_001)),/too long for Mac Start Speaking/);
+ await assert.rejects(bridge.speak('large-frame','\u0000'.repeat(200_000)),/too long for Mac Start Speaking/);
  assert.equal(connections,0);
 });
 
 test('Shutdown requires its matching process-exit acknowledgement and concurrent callers share failure',async()=>{
  const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');
  const port=fakeNativePort({autoShutdown:false}),bridge=new NativeMessagingBridge(()=>{},()=>port.port,5);
- bridge.speak('owned','Read.');const first=bridge.shutdown(),second=bridge.shutdown(),request=port.sent.at(-1);
+ await startSpeech(bridge,port,'owned','Read.');const first=bridge.shutdown(),second=bridge.shutdown(),request=port.sent.at(-1);
  port.receive({type:'shutdown-complete',id:'stale',stopped:true,processExited:true});assert.equal(port.disconnects,0);
  await assert.rejects(first,/verify shutdown/);await assert.rejects(second,/verify shutdown/);
- assert.equal(request.action,'shutdown');assert.throws(()=>bridge.speak('successor','Blocked.'),/verify shutdown/);
+ assert.equal(request.action,'shutdown');await assert.rejects(bridge.speak('successor','Blocked.'),/verify shutdown|independently verified/);
+});
+
+test('Speech validates protocol 2 on the exact port and rejects an installed legacy helper before posting text',async()=>{
+ const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts'),port=fakeNativePort(),bridge=new NativeMessagingBridge(()=>{},()=>port.port);
+ const speaking=bridge.speak('legacy','Never send this.');const capability=port.sent.at(-1);
+ port.receive({...supportedCapabilities(capability.id),protocolVersion:1,shutdownAcknowledgement:undefined});
+ await assert.rejects(speaking,/Update the Mac voice helper/);
+ assert.equal(port.sent.some(message=>message.action==='speak'),false);assert.equal(port.disconnects,1);
+});
+
+test('Immediate replay waits for verified helper exit and ignores the retired port disconnect',async()=>{
+ const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts'),first=fakeNativePort({autoShutdown:false}),second=fakeNativePort(),ports=[first,second];
+ const bridge=new NativeMessagingBridge(()=>{},()=>ports.shift().port);await startSpeech(bridge,first,'first','First.');
+ first.receive({type:'ended',id:'first'});const retirement=bridge.shutdown(),shutdown=first.sent.at(-1);assert.equal(shutdown.action,'shutdown');
+ const replay=bridge.speak('replay','Replay.');await flush();assert.equal(second.sent.length,0);
+ first.receive({type:'shutdown-complete',id:shutdown.id,stopped:true,processExited:true});await retirement;await flush();
+ const capability=second.sent.at(-1);assert.equal(capability.action,'capabilities');second.receive(supportedCapabilities(capability.id));await replay;
+ first.drop();assert.deepEqual(second.sent.at(-1),{action:'speak',id:'replay',text:'Replay.'});
+});
+
+test('Durable ownership hook and final guard both complete before native speech is posted',async()=>{
+ const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts'),port=fakeNativePort({autoShutdown:false}),bridge=new NativeMessagingBridge(()=>{},()=>port.port);
+ let releaseHook;const hookGate=new Promise(resolve=>{releaseHook=resolve;});let current=true,hookStarted=false;
+ const speaking=bridge.speak('cancelled','Do not post.',()=>current,async()=>{hookStarted=true;await hookGate;});
+ const capability=port.sent.at(-1);port.receive(supportedCapabilities(capability.id));await flush();assert.equal(hookStarted,true);assert.equal(port.sent.some(message=>message.action==='speak'),false);
+ current=false;releaseHook();await assert.rejects(speaking,/cancelled/);assert.equal(port.sent.some(message=>message.action==='speak'),false);
+ const closing=bridge.shutdown(),shutdown=port.sent.at(-1);port.receive({type:'shutdown-complete',id:shutdown.id,stopped:true,processExited:true});assert.equal(await closing,true);
 });
 
 let tokenizer;
@@ -164,7 +192,7 @@ async function launchHarness({text='A selected passage.',injectable=true,extract
  const event=name=>({addListener(fn){listeners[name]=fn;}});
  const chrome={
   runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onInstalled:event('installed'),onMessage:event('message'),connectNative:()=>nativePort?.port,sendMessage:async message=>{if(message.target==='engine')calls.push(message);return{ok:true};}},
-  storage:{session:{get:async()=>({}),set:async value=>{if(value.readerSnapshot)states.push(value.readerSnapshot);}},sync:{get:async()=>({...settings})}},
+  storage:{session:{get:async()=>({}),set:async value=>{if(value.readerSnapshot)states.push(value.readerSnapshot);}},local:{get:async()=>({}),set:async()=>{}},sync:{get:async()=>({...settings})}},
   offscreen:{hasDocument:async()=>exists,createDocument:async()=>{exists=true;},closeDocument:async()=>{exists=false;},Reason:{WORKERS:'WORKERS'}},
   tabs:{query:async()=>[{id:42}],update:async(id,options)=>{calls.push({action:'focus-tab',id,...options});return{windowId:7};},sendMessage:async(id,message)=>{if(message.type==='reader:show'){calls.push({action:'show',id,focus:message.focus});if(!injected)throw Error('No receiver');return{shown:true};}if(message.type==='reader:extract'){calls.push({action:'source-extract',...message});return mappedSource;}},onRemoved:event('removed'),onUpdated:event('updated')},
   windows:{update:async(id,options)=>calls.push({action:'focus-window',id,...options})},
@@ -355,6 +383,13 @@ test('Stopping active Mac system speech stops its native request',async()=>{
  h.engine.handleNativeMessage({type:'started',id:active.id});await flush();await h.engine.pause();assert.equal(h.engine.snapshot.stopping,true);h.engine.handleNativeMessage({type:'cancelled',id:active.id});await flush();assert.equal(h.engine.snapshot.phase,'complete');assert.equal(h.engine.snapshot.stopReason,'user');assert.match(h.engine.snapshot.message,/Stopped/);assert(calls.some(call=>call.action==='native-stop'&&call.id===active.id));assert.equal(h.workers.length,0);assert.equal(h.contexts.length,0);
 });
 
+test('Stop during pending native acquisition resolves as a user stop without an error',async()=>{
+ let resolveSpeak;const calls=[],h=engineHarness({nativeTransport:(action,fields)=>{calls.push({action,...fields});return action==='native-speak'?new Promise(resolve=>{resolveSpeak=resolve;}):Promise.resolve({ok:true});}});
+ await h.engine.start({text:'Cancel while acquiring.',voice:'mac:macos-start-speaking'},'pending-native');await flush();
+ await h.engine.pause();assert.equal(h.engine.snapshot.stopping,true);resolveSpeak({cancelled:true,error:'Cancelled before native speech was posted.'});await flush();await flush();
+ assert.equal(h.engine.snapshot.phase,'complete');assert.equal(h.engine.snapshot.stopReason,'user');assert.equal(h.engine.snapshot.error,undefined);assert.equal(h.workers.length,0);assert.equal(h.contexts.length,0);
+});
+
 test('A long pause releases the worker; resume retains buffers and creates only one replacement',async()=>{
  const h=engineHarness();await h.engine.start({text:'word '.repeat(100)},'pause');const old=h.workers[0];old.ready();old.audio(0,8);await flush();
  await h.engine.pause();assert.equal(h.contexts[0].state,'suspended');
@@ -369,7 +404,7 @@ test('A long pause releases the worker; resume retains buffers and creates only 
 async function backgroundHarness(action){
  const listeners={};let exists=true,releaseRecovery;const events=name=>({addListener(fn){listeners[name]=fn;}});
  const active={phase:'playing',sessionId:'retained-session',voice:'af_sarah',speed:1,elapsedSec:12,durationSec:120,bufferedSec:15,modelResident:true};
- const chrome={runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onInstalled:events('installed'),onMessage:events('message'),sendMessage:async m=>m.target==='engine'&&m.action==='get'?{snapshot:active}:{ok:true}},storage:{session:{set:async()=>{},get:()=>new Promise(resolve=>{releaseRecovery=()=>resolve({readerOwnerTab:42});})},sync:{get:async()=>({})}},offscreen:{hasDocument:async()=>exists,closeDocument:async()=>{exists=false;},createDocument:async()=>{},Reason:{WORKERS:'WORKERS'}},tabs:{query:async()=>[{id:42}],sendMessage:async()=>{},onRemoved:events('removed'),onUpdated:events('updated')},contextMenus:{onClicked:events('context'),removeAll(){},create(){}},commands:{onCommand:events('command')},scripting:{executeScript:async()=>[]}};
+ const chrome={runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onInstalled:events('installed'),onMessage:events('message'),sendMessage:async m=>m.target==='engine'&&m.action==='get'?{snapshot:active}:{ok:true}},storage:{session:{set:async()=>{},get:()=>new Promise(resolve=>{releaseRecovery=()=>resolve({readerOwnerTab:42});})},local:{get:async()=>({}),set:async()=>{}},sync:{get:async()=>({})}},offscreen:{hasDocument:async()=>exists,closeDocument:async()=>{exists=false;},createDocument:async()=>{},Reason:{WORKERS:'WORKERS'}},tabs:{query:async()=>[{id:42}],sendMessage:async()=>{},onRemoved:events('removed'),onUpdated:events('updated')},contextMenus:{onClicked:events('context'),removeAll(){},create(){}},commands:{onCommand:events('command')},scripting:{executeScript:async()=>[]}};
  vm.runInNewContext(backgroundCode,{chrome,defineBackground:fn=>fn(),crypto,setTimeout,clearTimeout,console});
  let response;
  if(action==='get')listeners.message({channel:'local-reader-v2',target:'background',action:'get'},{id:'test-extension'},r=>response=r);
@@ -433,11 +468,11 @@ test('A deferred native Stop response cannot overwrite replacement or closed ses
 });
 
 test('Native bridge terminal listeners may start replacement without losing its active port',async()=>{
- const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');const port=fakeNativePort(),events=[];
- const bridge=new NativeMessagingBridge(message=>{events.push(message);if(message.id==='old')bridge.speak('new','Replacement.');},()=>port.port);
- bridge.speak('old','Original.');port.receive({type:'ended',id:'old'});
- assert.equal(port.disconnects,0);
- port.receive({type:'started',id:'new'});assert.equal(events.at(-1).id,'new');bridge.close();
+ const {NativeMessagingBridge}=await moduleOf('src/lib/nativeMessaging.ts');const first=fakeNativePort(),second=fakeNativePort(),ports=[first,second],events=[];let replacement;
+ const bridge=new NativeMessagingBridge(message=>{events.push(message);if(message.id==='old')replacement=(async()=>{assert.equal(await bridge.shutdown(),true);await bridge.speak('new','Replacement.');})();},()=>ports.shift().port);
+ await startSpeech(bridge,first,'old','Original.');first.receive({type:'ended',id:'old'});await flush();
+ const capability=second.sent.at(-1);assert.equal(capability.action,'capabilities');second.receive(supportedCapabilities(capability.id));await replacement;
+ second.receive({type:'started',id:'new'});assert.equal(events.at(-1).id,'new');await bridge.close();
 });
 
 test('Native Stop failure stays an error and late Stop failure cannot corrupt a replacement',async()=>{
@@ -516,13 +551,20 @@ test('Kokoro to native keeps the current sentence and paused intent; native repl
 });
 
 test('Native to Kokoro waits for confirmed Stop and ignores late native lifecycle messages',async()=>{
- const calls=[],h=engineHarness({nativeTransport:async(action,fields)=>{calls.push({action,...fields});return{ok:true};}});
+ let releaseShutdown;const shutdownGate=new Promise(resolve=>{releaseShutdown=resolve;});const calls=[],h=engineHarness({nativeTransport:async(action,fields)=>{calls.push({action,...fields});return action==='native-shutdown'?shutdownGate:{ok:true};}});
  await h.engine.start({text:switchText,sourceId:'source',voice:'mac:macos-start-speaking'},'voice-session');const native=calls.find(c=>c.action==='native-speak');h.engine.handleNativeMessage({type:'started',id:native.id});await flush();
  const changing=h.engine.changeVoice('af_nicole','voice-session');await flush();assert(calls.some(c=>c.action==='native-stop'&&c.id===native.id));assert.equal(h.workers.length,0);assert.equal(h.engine.snapshot.voice,'mac:macos-start-speaking');
  h.engine.handleNativeMessage({type:'started',id:native.id});await flush();assert.equal(h.workers.length,0);
- h.engine.handleNativeMessage({type:'cancelled',id:native.id});await changing;
+ h.engine.handleNativeMessage({type:'cancelled',id:native.id});await flush();assert(calls.some(c=>c.action==='native-shutdown'));assert.equal(h.workers.length,0);assert.equal(h.contexts.length,0);releaseShutdown({ok:true});await changing;
  assert.equal(h.engine.snapshot.voice,'af_nicole');assert.equal(h.engine.snapshot.sourceId,'source');h.workers[0].ready();assert.equal(h.workers[0].messages.at(-1).text,'First sentence is already behind us.');
  h.engine.handleNativeMessage({type:'ended',id:native.id});h.engine.handleNativeMessage({type:'error',id:native.id,message:'Old native error'});await flush();assert.equal(h.engine.snapshot.voice,'af_nicole');assert.notEqual(h.engine.snapshot.phase,'complete');assert.notEqual(h.engine.snapshot.phase,'error');h.engine.stop();
+});
+
+test('Failed verified native shutdown never starts bundled audio during a voice change',async()=>{
+ const calls=[],h=engineHarness({nativeTransport:async(action,fields)=>{calls.push({action,...fields});return action==='native-shutdown'?{error:'Helper exit was not verified.'}:{ok:true};}});
+ await h.engine.start({text:switchText,voice:'mac:macos-start-speaking'},'voice-session');const id=calls.find(call=>call.action==='native-speak').id;
+ const changing=h.engine.changeVoice('af_nicole','voice-session');await flush();h.engine.handleNativeMessage({type:'cancelled',id});
+ await assert.rejects(changing,/not verified/);assert.equal(h.workers.length,0);assert.equal(h.contexts.length,0);assert.equal(h.engine.snapshot.voice,'mac:macos-start-speaking');h.engine.stop();
 });
 
 test('Voice validation, native preflight and stale session rejection preserve active audio',async()=>{
@@ -557,7 +599,7 @@ async function voiceBackgroundHarness({active=true,engineError}={}){
  let state={phase:'paused',sessionId:'retained-session',sourceId:'retained-source',voice:'af_sarah',speed:1,elapsedSec:7,durationSec:30,bufferedSec:10,revision:1};
  const chrome={
   runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onInstalled:events('installed'),onMessage:events('message'),sendMessage:async m=>{if(m.target!=='engine')return;calls.push(m);if(m.action==='voice'){if(engineError)return{error:engineError};state={...state,voice:m.voice,revision:state.revision+1};}return{ok:true,snapshot:state};}},
-  storage:{session:{get:async()=>({readerOwnerTab:42,readerSnapshot:{pagePlayerAvailable:true}}),set:async values=>{if(values.readerSnapshot)published.push(values.readerSnapshot);}},sync:{get:async()=>saved,set:async values=>Object.assign(saved,values)}},
+  storage:{session:{get:async()=>({readerOwnerTab:42,readerSnapshot:{pagePlayerAvailable:true}}),set:async values=>{if(values.readerSnapshot)published.push(values.readerSnapshot);}},local:{get:async()=>({}),set:async()=>{}},sync:{get:async()=>saved,set:async values=>Object.assign(saved,values)}},
   offscreen:{hasDocument:async()=>exists,closeDocument:async()=>{exists=false;},createDocument:async()=>{exists=true;},Reason:{WORKERS:'WORKERS'}},
   tabs:{query:async()=>[{id:42}],sendMessage:async(id,message)=>{calls.push({tab:id,...message});},onRemoved:events('removed'),onUpdated:events('updated')},
   contextMenus:{onClicked:events('context'),removeAll(){},create(){}},commands:{onCommand:events('command')},scripting:{executeScript:async()=>{throw Error('Voice changes must not re-extract source.');}},

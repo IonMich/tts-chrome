@@ -30,6 +30,21 @@ agent exit. Only that exact process's exit event produces the public
 exiting do not qualify. A timeout or helper failure produces no successful
 shutdown acknowledgement; the extension blocks replacement on uncertain state.
 
+Before posting speech, the extension records ownership in `chrome.storage.local`.
+The record survives extension reload and service-worker restart and is cleared
+only after the matching helper's verified shutdown. Pending ownership writes,
+speech acquisition, and shutdown are serialized so a late old write or callback
+cannot clear a replacement's record. Normal completion retires the helper and
+clears the record promptly; errors reading or writing ownership fail closed.
+
+If the background worker is lost while ownership is recorded, this version
+cannot recover the old native connection and deliberately blocks new readings.
+Reloading or reinstalling is not proof of process exit and does not clear the
+record. Recovery requires a maintainer to verify that the previous helper has
+exited before repairing the ownership record; a macOS restart establishes that
+pre-restart helper processes have exited. Do not clear the record merely to retry
+speech. There is no automatic recovery or user-facing recovery control yet.
+
 Speech yields `started` followed by exactly one `ended`,
 `cancelled`, or `error`. The mode can stop but cannot pause, seek, return PCM, or
 report the underlying macOS voice identifier.

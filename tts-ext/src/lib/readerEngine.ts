@@ -13,7 +13,7 @@ export class ReaderEngine {
  get diagnostics(){return{...this.metrics,replayExpiresAt:this.replayExpires,finishing:this.finishing,clockNow:Date.now(),modelResident:this.worker!==null,audioContextState:this.context?.state??'closed',encodedStreamResident:!!this.stream,retainedSec:this.stream?.retainedSec??0,encodedBytesProduced:this.stream?.encodedBytes??0,retainedStartSec:this.stream?.start??0,preservesPitch:this.stream?.audio.preservesPitch??null,playbackRate:this.stream?.audio.playbackRate??null,snapshot:this.snapshot};}
  private emit(patch:Partial<ReaderSnapshot>={}){this.state={...this.state,...patch};if(this.backend!=='native')this.state.spokenPosition=this.state.sourceId&&this.stream&&['playing','paused'].includes(this.state.phase)?spokenPositionAt(this.cues,this.sentences,this.stream.position):{precision:'unavailable'};this.notify(this.snapshot);}
  private freeWorker(){clearTimeout(this.watchdog);const had=!!this.worker;this.worker?.terminate();this.worker=null;this.workerReady=false;this.busy=false;this.state.modelResident=false;if(had)this.metrics.workerReleasedMs=performance.now()-(this.metrics.requestStartedAt??performance.now());}
- stop(emit=true){this.epoch++;this.nativeStopWaiter?.finish(Error('This reading session ended.'));clearInterval(this.timer);clearTimeout(this.pauseTimer);clearTimeout(this.watchdog);this.freeWorker();const nativeRequestId=this.nativeRequestId;this.nativeRequestId=null;if(nativeRequestId)void this.nativeTransport('native-stop',{id:nativeRequestId}).catch(()=>{});this.nativeChain=Promise.resolve();this.stream?.close();this.stream=null;this.chunks=[];this.sourceChunks=[];this.sentences=[];this.cues=[];this.cueEnd=0;this.request=null;this.meter?.disconnect();this.meter=null;void this.context?.close();this.context=null;this.metrics.stopped=true;if(emit){this.state=idleSnapshot();this.notify(this.snapshot);}}
+ stop(emit=true){this.epoch++;this.nativeStopWaiter?.finish(Error('This reading session ended.'));clearInterval(this.timer);clearTimeout(this.pauseTimer);clearTimeout(this.watchdog);this.freeWorker();const nativeRequestId=this.nativeRequestId;this.nativeRequestId=null;if(nativeRequestId)void this.nativeTransport('native-stop',{id:nativeRequestId,sessionId:this.state.sessionId}).catch(()=>{});this.nativeChain=Promise.resolve();this.stream?.close();this.stream=null;this.chunks=[];this.sourceChunks=[];this.sentences=[];this.cues=[];this.cueEnd=0;this.request=null;this.meter?.disconnect();this.meter=null;void this.context?.close();this.context=null;this.metrics.stopped=true;if(emit){this.state=idleSnapshot();this.notify(this.snapshot);}}
  async start(input:ReaderRequest,sessionId:string,requestedAt=Date.now()){
   return this.begin(validateRequest(input),sessionId,requestedAt);
  }
@@ -60,7 +60,7 @@ export class ReaderEngine {
    const timer=setTimeout(()=>waiter.finish(Error('The Mac voice did not confirm Stop. Try changing voice again.')),5000);
    const waiter={id,finish:(error?:Error)=>{if(this.nativeStopWaiter!==waiter)return;clearTimeout(timer);this.nativeStopWaiter=null;error?reject(error):resolve();}};
    this.nativeStopWaiter=waiter;
-   void this.nativeTransport('native-stop',{id}).then(result=>{if(result?.error)waiter.finish(Error(result.error));}).catch(error=>waiter.finish(error instanceof Error?error:Error(String(error))));
+   void this.nativeTransport('native-stop',{id,sessionId:this.state.sessionId}).then(result=>{if(result?.error)waiter.finish(Error(result.error));}).catch(error=>waiter.finish(error instanceof Error?error:Error(String(error))));
   });
  }
  private spawnWorker(epoch:number){
@@ -108,7 +108,7 @@ export class ReaderEngine {
   const id=`${this.state.sessionId}:${epoch}:${++this.nativeSequence}`;this.nativeRequestId=id;this.done=false;this.started=false;
   this.emit({phase:'preparing',message:'Starting the Mac voice…',speechMode:'system',stopping:false,stopReason:undefined,spokenPosition:{precision:'unavailable'},elapsedSec:0,durationSec:null,bufferedSec:0,seekableStartSec:undefined,seekableEndSec:undefined});
   this.watchdog=setTimeout(()=>{if(id===this.nativeRequestId)this.fail(Error('The Mac voice did not start. Close and try again.'));},15000);
-  void this.nativeTransport('native-speak',{id,text:this.request.text.slice(this.playbackOffset)}).then(result=>{if(result?.error&&id===this.nativeRequestId)this.fail(Error(result.error));}).catch(error=>{if(id===this.nativeRequestId)this.fail(error);});
+  void this.nativeTransport('native-speak',{id,text:this.request.text.slice(this.playbackOffset)}).then(result=>{if(id!==this.nativeRequestId)return;if(result?.cancelled){this.handleNativeMessage({type:'cancelled',id});return;}if(result?.error)this.fail(Error(result.error));}).catch(error=>{if(id===this.nativeRequestId)this.fail(error);});
  }
  private pump(){
   const speed=this.state.speed;if(this.paused||this.done||this.busy||!this.workerReady||!this.request||!this.stream||this.stream.ahead/speed>22)return;this.busy=true;this.watchdog=setTimeout(()=>this.fail(Error('Speech generation stopped responding. Close and try again.')),120000);
@@ -128,8 +128,8 @@ export class ReaderEngine {
  async pause(){if(this.backend==='native'){
   if(!this.nativeRequestId||this.state.stopping)return;const id=this.nativeRequestId,epoch=this.epoch;
   clearTimeout(this.watchdog);this.emit({stopping:true,message:'Stopping the Mac voice…'});
-  this.watchdog=setTimeout(()=>{if(epoch===this.epoch&&id===this.nativeRequestId)this.fail(Error('The Mac voice did not confirm Stop. Close and try again.'));},5000);
-  try{const result=await this.nativeTransport('native-stop',{id});if(result?.error)throw Error(result.error);}
+  this.watchdog=setTimeout(()=>{if(epoch===this.epoch&&id===this.nativeRequestId)this.fail(Error('The Mac voice did not confirm Stop. Reading remains blocked until the helper exit is independently verified.'));},5000);
+  try{const result=await this.nativeTransport('native-stop',{id,sessionId:this.state.sessionId});if(result?.error)throw Error(result.error);}
   catch(error){if(epoch===this.epoch&&id===this.nativeRequestId)this.fail(error);}
   return;
  }if(!this.context||!this.stream||['idle','error'].includes(this.state.phase))return;const epoch=this.epoch;this.paused=true;this.stream.pause();await this.context.suspend();if(epoch!==this.epoch)return;if(this.done){this.finishing=true;this.replayExpires=Date.now()+120000;}this.emit({phase:'paused',message:undefined,replayExpiresAt:this.replayExpires||undefined});clearTimeout(this.pauseTimer);this.pauseTimer=setTimeout(()=>{if(epoch===this.epoch&&this.paused){this.freeWorker();this.emit({modelResident:false,message:'Paused · voice memory released. Available audio is retained.'});}},30000);}
