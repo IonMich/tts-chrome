@@ -1,6 +1,6 @@
 import { defineConfig } from 'wxt';
 export default defineConfig({
-  modules: ['@wxt-dev/module-react'], extensionApi: 'chrome', srcDir: 'src',
+  modules: ['@wxt-dev/module-react'], srcDir: 'src', publicDir: 'src/public',
   // Use the released native WebGPU execution provider. Transformers 3.5.1's
   // original development runtime used JSEP and reproduced severe buffer churn.
   vite: () => ({ resolve: { alias: [{ find: /^onnxruntime-web$/, replacement: 'onnxruntime-web/webgpu' }] } }),
